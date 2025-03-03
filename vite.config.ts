@@ -16,16 +16,12 @@ export default defineConfig({
       remotes: {},
 
       // Shared modules
-      shared: {
-        react: {},
-        "react-dom": {},
-        "react-router-dom": {},
-      },
+      shared: ["react", "react-dom", "react-router-dom"],
     }),
   ],
   build: {
     target: "esnext",
-    minify: false,
+    minify: true,
     cssCodeSplit: false,
   },
   preview: {

@@ -347,9 +347,8 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
           </TableHead>
           <TableBody>
             {metaFile.data.map((parentItem: CostItem) => (
-              <>
+              <div key={parentItem.code} className="table-row-group">
                 <TableRow
-                  key={parentItem.code}
                   hover
                   sx={{
                     backgroundColor: "rgba(0, 0, 0, 0.04)",
@@ -503,7 +502,7 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
                     </Collapse>
                   </TableCell>
                 </TableRow>
-              </>
+              </div>
             ))}
           </TableBody>
         </Table>
@@ -531,14 +530,14 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
         >
           <input {...getInputProps()} />
           {isDragActive ? (
-            <>
+            <div>
               <UploadFileIcon color="primary" sx={{ fontSize: 40, mb: 1 }} />
               <Typography variant="body1" color="primary">
                 Lassen Sie die Excel-Datei hier fallen...
               </Typography>
-            </>
+            </div>
           ) : (
-            <>
+            <div>
               <UploadFileIcon color="primary" sx={{ fontSize: 40, mb: 1 }} />
               <Typography variant="body1" color="textPrimary">
                 Drag and Drop
@@ -546,11 +545,11 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
               <Typography variant="body2" color="textSecondary">
                 Format: Excel (.xlsx, .xls)
               </Typography>
-            </>
+            </div>
           )}
         </Paper>
       ) : (
-        <>
+        <div>
           {isLoading ? (
             <Box display="flex" justifyContent="center" my={4}>
               <CircularProgress />
@@ -597,7 +596,7 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
               {renderHierarchicalTable()}
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
