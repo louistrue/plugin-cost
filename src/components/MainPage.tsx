@@ -17,7 +17,7 @@ import {
   Chip,
   Box,
 } from "@mui/material";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import CostUploader from "./CostUploader/index";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import { CostItem } from "./CostUploader/types";
@@ -52,14 +52,6 @@ const MainPage = () => {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [totalCostSum, setTotalCostSum] = useState<number>(0);
 
-  // Calculate total cost sum whenever uploaded files change
-  useEffect(() => {
-    const newTotal = uploadedFiles.reduce((sum, file) => {
-      return sum + (file.totalCost || 0);
-    }, 0);
-    setTotalCostSum(newTotal);
-  }, [uploadedFiles]);
-
   // Function to receive uploaded files from CostUploader
   const handleFileUploaded = (
     fileName: string,
@@ -72,6 +64,31 @@ const MainPage = () => {
     let totalCost = 0;
     if (costData && costData.length > 0) {
       totalCost = calculateTotalCost(costData);
+    }
+
+    // Handle file removal
+    if (status === "Gelöscht") {
+      setTotalCostSum(0); // Reset the total when a file is removed
+
+      // Update the file's status to "Gelöscht" instead of removing it
+      setUploadedFiles((prev) =>
+        prev.map((file) =>
+          file.name === fileName
+            ? {
+                ...file,
+                status: "Gelöscht",
+                date: date || file.date,
+                totalCost: 0,
+              }
+            : file
+        )
+      );
+
+      return; // Exit early since we've handled the deletion
+    } else {
+      // For all new uploads and updates, set the total cost to this file's cost
+      // This replaces the previous total rather than adding to it
+      setTotalCostSum(totalCost);
     }
 
     if (isUpdate) {
@@ -93,6 +110,11 @@ const MainPage = () => {
         (file) => file.name === fileName && file.status === "Vorschau"
       );
 
+      // Also check if this file was previously deleted
+      const wasDeleted = uploadedFiles.some(
+        (file) => file.name === fileName && file.status === "Gelöscht"
+      );
+
       if (hasPreview) {
         // Update the existing preview entry
         setUploadedFiles((prev) =>
@@ -102,16 +124,27 @@ const MainPage = () => {
               : file
           )
         );
-      } else {
-        // Add a completely new entry
+      } else if (wasDeleted) {
+        // If the file was previously deleted, add a new entry
         setUploadedFiles((prev) => [
-          ...prev,
           {
             name: fileName,
             date: date || new Date().toLocaleString("de-CH"),
             status: status || "Erfolgreich",
             totalCost: totalCost,
           },
+          ...prev,
+        ]);
+      } else {
+        // Add a completely new entry
+        setUploadedFiles((prev) => [
+          {
+            name: fileName,
+            date: date || new Date().toLocaleString("de-CH"),
+            status: status || "Erfolgreich",
+            totalCost: totalCost,
+          },
+          ...prev,
         ]);
       }
     }
@@ -150,9 +183,9 @@ const MainPage = () => {
   return (
     <div className="w-full flex h-full overflow-hidden">
       {/* Sidebar */}
-      <div className="w-1/4 min-w-[300px] max-w-[400px] p-8 bg-light text-primary flex flex-col">
+      <div className="w-1/4 min-w-[300px] max-w-[400px] p-8 bg-light text-primary flex flex-col h-full">
         {/* Header und Inhalte */}
-        <div>
+        <div className="flex flex-col flex-grow overflow-hidden">
           <Typography variant="h3" className="text-5xl mb-2" color="primary">
             Kosten
           </Typography>
@@ -210,7 +243,10 @@ const MainPage = () => {
           </Box>
 
           {/* Hochgeladene Dateien Section - Moved from footer to below total cost box */}
-          <div className="mb-6 mt-4">
+          <div
+            className="mb-6 mt-4 flex-grow flex flex-col overflow-hidden"
+            style={{ minHeight: "200px" }}
+          >
             <Typography
               variant="subtitle1"
               className="font-bold mb-2"
@@ -219,78 +255,90 @@ const MainPage = () => {
               Hochgeladene Dateien
             </Typography>
             <Divider sx={{ mb: 2 }} />
-            {uploadedFiles.length > 0 ? (
-              <TableContainer sx={{ maxHeight: 200 }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell
-                        sx={{ padding: "6px 8px", fontWeight: "bold" }}
-                      >
-                        Dateiname
-                      </TableCell>
-                      <TableCell
-                        sx={{ padding: "6px 8px", fontWeight: "bold" }}
-                      >
-                        Datum
-                      </TableCell>
-                      <TableCell
-                        sx={{ padding: "6px 8px", fontWeight: "bold" }}
-                      >
-                        Status
-                      </TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {uploadedFiles.map((file, index) => (
-                      <TableRow key={index} hover>
+            <div className="flex-grow flex flex-col overflow-hidden">
+              {uploadedFiles.length > 0 ? (
+                <TableContainer
+                  sx={{
+                    flex: 1,
+                    overflow: "auto",
+                    maxHeight: "calc(100% - 40px)",
+                  }}
+                >
+                  <Table size="small" stickyHeader>
+                    <TableHead>
+                      <TableRow>
                         <TableCell
-                          sx={{ padding: "6px 8px", fontSize: "0.75rem" }}
+                          sx={{ padding: "6px 8px", fontWeight: "bold" }}
                         >
-                          <div className="flex items-center">
-                            <InsertDriveFileIcon
-                              color="primary"
-                              fontSize="small"
-                              sx={{ mr: 1, fontSize: "1rem" }}
-                            />
-                            <span style={{ wordBreak: "break-word" }}>
-                              {file.name}
-                            </span>
-                          </div>
+                          Dateiname
                         </TableCell>
                         <TableCell
-                          sx={{ padding: "6px 8px", fontSize: "0.75rem" }}
+                          sx={{ padding: "6px 8px", fontWeight: "bold" }}
                         >
-                          {file.date}
+                          Datum
                         </TableCell>
                         <TableCell
-                          sx={{ padding: "6px 8px", fontSize: "0.75rem" }}
+                          sx={{ padding: "6px 8px", fontWeight: "bold" }}
                         >
-                          <Chip
-                            label={file.status}
-                            color={
-                              file.status === "Vorschau" ? "warning" : "success"
-                            }
-                            size="small"
-                            variant="outlined"
-                            sx={{ height: 20, fontSize: "0.7rem" }}
-                          />
+                          Status
                         </TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                Keine Dateien hochgeladen
-              </Typography>
-            )}
+                    </TableHead>
+                    <TableBody>
+                      {uploadedFiles.map((file, index) => (
+                        <TableRow key={index} hover>
+                          <TableCell
+                            sx={{ padding: "6px 8px", fontSize: "0.75rem" }}
+                          >
+                            <div className="flex items-center">
+                              <InsertDriveFileIcon
+                                color="primary"
+                                fontSize="small"
+                                sx={{ mr: 1, fontSize: "1rem" }}
+                              />
+                              <span style={{ wordBreak: "break-word" }}>
+                                {file.name}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            sx={{ padding: "6px 8px", fontSize: "0.75rem" }}
+                          >
+                            {file.date}
+                          </TableCell>
+                          <TableCell
+                            sx={{ padding: "6px 8px", fontSize: "0.75rem" }}
+                          >
+                            <Chip
+                              label={file.status}
+                              color={
+                                file.status === "Vorschau"
+                                  ? "warning"
+                                  : file.status === "Gelöscht"
+                                  ? "default"
+                                  : "success"
+                              }
+                              size="small"
+                              variant="outlined"
+                              sx={{ height: 20, fontSize: "0.7rem" }}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  Keine Dateien hochgeladen
+                </Typography>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Fusszeile */}
-        <div className="flex mt-auto flex-col">
+        <div className="flex flex-col flex-1 mt-auto">
           {/* Anleitung Section */}
           <div>
             <Typography

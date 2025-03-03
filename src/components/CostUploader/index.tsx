@@ -25,7 +25,7 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
       // Keep the same filename but pass null data to indicate removal
       const fileName = metaFile.file.name;
       const currentDate = new Date().toLocaleString("de-CH");
-      const status = "Entfernt";
+      const status = "Gelöscht";
       onFileUploaded(fileName, currentDate, status, [], false);
     }
 

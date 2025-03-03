@@ -47,7 +47,11 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
       <Divider sx={{ my: 2 }} />
 
-      <Typography variant="h6" className="mb-2">
+      <Typography
+        variant="h5"
+        className="mb-4"
+        sx={{ color: "#000", fontWeight: 500 }}
+      >
         Kostenübersicht
       </Typography>
     </>
