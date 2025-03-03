@@ -24,7 +24,13 @@ export type MetaFile = {
 };
 
 export interface CostUploaderProps {
-  onFileUploaded?: (fileName: string, date?: string, status?: string) => void;
+  onFileUploaded?: (
+    fileName: string,
+    date?: string,
+    status?: string,
+    costData?: CostItem[],
+    isUpdate?: boolean
+  ) => void;
 }
 
 export const REQUIRED_HEADERS = [

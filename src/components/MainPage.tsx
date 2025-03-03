@@ -15,16 +15,19 @@ import {
   TableCell,
   TableContainer,
   Chip,
+  Box,
 } from "@mui/material";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import CostUploader from "./CostUploader/index";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
+import { CostItem } from "./CostUploader/types";
 
 // Define a type for uploaded files with date and status
 type UploadedFile = {
   name: string;
   date: string;
   status: string;
+  totalCost?: number;
 };
 
 const MainPage = () => {
@@ -47,21 +50,101 @@ const MainPage = () => {
 
   const [selectedProject, setSelectedProject] = useState("Projekt 1");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [totalCostSum, setTotalCostSum] = useState<number>(0);
+
+  // Calculate total cost sum whenever uploaded files change
+  useEffect(() => {
+    const newTotal = uploadedFiles.reduce((sum, file) => {
+      return sum + (file.totalCost || 0);
+    }, 0);
+    setTotalCostSum(newTotal);
+  }, [uploadedFiles]);
 
   // Function to receive uploaded files from CostUploader
   const handleFileUploaded = (
     fileName: string,
     date?: string,
-    status?: string
+    status?: string,
+    costData?: CostItem[],
+    isUpdate?: boolean
   ) => {
-    setUploadedFiles((prev) => [
-      ...prev,
-      {
-        name: fileName,
-        date: date || new Date().toLocaleString("de-CH"),
-        status: status || "Erfolgreich",
-      },
-    ]);
+    // Calculate total from cost data if available
+    let totalCost = 0;
+    if (costData && costData.length > 0) {
+      totalCost = calculateTotalCost(costData);
+    }
+
+    if (isUpdate) {
+      // Update the existing entry with "Vorschau" status to "Erfolgreich"
+      setUploadedFiles((prev) =>
+        prev.map((file) =>
+          file.name === fileName && file.status === "Vorschau"
+            ? {
+                ...file,
+                status: status || "Erfolgreich",
+                date: date || file.date,
+              }
+            : file
+        )
+      );
+    } else {
+      // For new uploads, check if we already have a "Vorschau" for this file
+      const hasPreview = uploadedFiles.some(
+        (file) => file.name === fileName && file.status === "Vorschau"
+      );
+
+      if (hasPreview) {
+        // Update the existing preview entry
+        setUploadedFiles((prev) =>
+          prev.map((file) =>
+            file.name === fileName && file.status === "Vorschau"
+              ? { ...file, totalCost, date: date || file.date }
+              : file
+          )
+        );
+      } else {
+        // Add a completely new entry
+        setUploadedFiles((prev) => [
+          ...prev,
+          {
+            name: fileName,
+            date: date || new Date().toLocaleString("de-CH"),
+            status: status || "Erfolgreich",
+            totalCost: totalCost,
+          },
+        ]);
+      }
+    }
+  };
+
+  // Function to calculate total cost from all cost items
+  const calculateTotalCost = (items: CostItem[]): number => {
+    let total = 0;
+
+    // Process all top-level items
+    for (const item of items) {
+      // Add the totalChf value if it exists
+      if (item.totalChf !== null && item.totalChf !== undefined) {
+        total += item.totalChf;
+      }
+
+      // Recursively process children (this is not usually needed as the parent totalChf
+      // should already include all children, but added for completeness)
+      if (item.children && item.children.length > 0) {
+        total += calculateTotalCost(item.children);
+      }
+    }
+
+    return total;
+  };
+
+  // Format currency with Swiss format
+  const formatCurrency = (amount: number): string => {
+    return amount.toLocaleString("de-CH", {
+      style: "decimal",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
   };
 
   return (
@@ -98,12 +181,36 @@ const MainPage = () => {
               </Select>
             </FormControl>
           </div>
-        </div>
 
-        {/* Fusszeile */}
-        <div className="flex mt-auto flex-col">
-          {/* Hochgeladene Dateien Section */}
-          <div className="mb-10">
+          {/* Total Cost Sum Box */}
+          <Box
+            sx={{
+              p: 2,
+              mt: 4,
+              mb: 2,
+              background: "linear-gradient(to right top, #F1D900, #fff176)",
+              borderRadius: 1,
+            }}
+          >
+            <Typography
+              variant="h4"
+              component="p"
+              color="common.black"
+              fontWeight="bold"
+            >
+              {formatCurrency(totalCostSum)}
+              <Typography
+                component="span"
+                variant="h6"
+                sx={{ ml: 1, opacity: 0.7, fontWeight: "normal" }}
+              >
+                CHF
+              </Typography>
+            </Typography>
+          </Box>
+
+          {/* Hochgeladene Dateien Section - Moved from footer to below total cost box */}
+          <div className="mb-6 mt-4">
             <Typography
               variant="subtitle1"
               className="font-bold mb-2"
@@ -161,7 +268,9 @@ const MainPage = () => {
                         >
                           <Chip
                             label={file.status}
-                            color="success"
+                            color={
+                              file.status === "Vorschau" ? "warning" : "success"
+                            }
                             size="small"
                             variant="outlined"
                             sx={{ height: 20, fontSize: "0.7rem" }}
@@ -178,7 +287,10 @@ const MainPage = () => {
               </Typography>
             )}
           </div>
+        </div>
 
+        {/* Fusszeile */}
+        <div className="flex mt-auto flex-col">
           {/* Anleitung Section */}
           <div>
             <Typography

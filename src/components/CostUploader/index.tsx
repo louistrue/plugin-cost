@@ -20,6 +20,15 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
   };
 
   const handleRemoveFile = () => {
+    // If there was a file and it was passed to the parent, notify that it's being removed
+    if (metaFile && onFileUploaded) {
+      // Keep the same filename but pass null data to indicate removal
+      const fileName = metaFile.file.name;
+      const currentDate = new Date().toLocaleString("de-CH");
+      const status = "Entfernt";
+      onFileUploaded(fileName, currentDate, status, [], false);
+    }
+
     setMetaFile(null);
   };
 
@@ -35,10 +44,11 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
       const fileName = metaFile.file.name;
       const currentDate = new Date().toLocaleString("de-CH");
       const status = "Erfolgreich";
+      const isUpdate = true; // Flag to indicate this is updating an existing entry
 
       // Call the onFileUploaded prop if provided
       if (onFileUploaded) {
-        onFileUploaded(fileName, currentDate, status);
+        onFileUploaded(fileName, currentDate, status, metaFile.data, isUpdate);
       }
 
       setMetaFile(null);
@@ -48,6 +58,14 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
 
   const handleFileUploaded = (newMetaFile: MetaFile) => {
     setMetaFile(newMetaFile);
+
+    // Pass the cost data to the parent component immediately
+    if (onFileUploaded && newMetaFile.data) {
+      const fileName = newMetaFile.file.name;
+      const currentDate = new Date().toLocaleString("de-CH");
+      const status = "Vorschau";
+      onFileUploaded(fileName, currentDate, status, newMetaFile.data);
+    }
   };
 
   return (
