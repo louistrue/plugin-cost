@@ -17,7 +17,7 @@ import {
   Chip,
 } from "@mui/material";
 import { useState } from "react";
-import CostUploader from "./CostUploader";
+import CostUploader from "./CostUploader/index";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 
 // Define a type for uploaded files with date and status
@@ -67,7 +67,7 @@ const MainPage = () => {
   return (
     <div className="w-full flex h-full overflow-hidden">
       {/* Sidebar */}
-      <div className="w-1/4 p-8 bg-light text-primary flex flex-col">
+      <div className="w-1/4 min-w-[300px] max-w-[400px] p-8 bg-light text-primary flex flex-col">
         {/* Header und Inhalte */}
         <div>
           <Typography variant="h3" className="text-5xl mb-2" color="primary">
@@ -100,7 +100,7 @@ const MainPage = () => {
           </div>
         </div>
 
-        {/* Fußzeile */}
+        {/* Fusszeile */}
         <div className="flex mt-auto flex-col">
           {/* Hochgeladene Dateien Section */}
           <div className="mb-10">
@@ -216,7 +216,7 @@ const MainPage = () => {
       </div>
 
       {/* Hauptbereich */}
-      <div className="flex-grow flex flex-col h-full">
+      <div className="flex-1 w-3/4 flex flex-col h-full overflow-hidden">
         <div className="flex-grow overflow-y-auto p-10 flex flex-col h-full">
           <Typography variant="h2" className="text-5xl mb-10">
             Kostendaten hochladen
