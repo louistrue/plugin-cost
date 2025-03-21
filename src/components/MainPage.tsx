@@ -16,10 +16,12 @@ import {
   TableContainer,
   Chip,
   Box,
+  Button,
 } from "@mui/material";
 import { useState } from "react";
 import CostUploader from "./CostUploader/index";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
+import DownloadIcon from "@mui/icons-material/Download";
 import { CostItem } from "./CostUploader/types";
 import KafkaConsole from "./KafkaConsole";
 
@@ -142,6 +144,18 @@ const MainPage = () => {
     }, 0);
   };
 
+  // Function to handle template download
+  const handleTemplateDownload = () => {
+    // Use a direct path relative to the domain root
+    const templateUrl = `/templates/241212_Kosten-Template.xlsx`;
+    const link = document.createElement("a");
+    link.href = templateUrl;
+    link.download = "241212_Kosten-Template.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <Box sx={{ padding: "20px" }}>
       <Box
@@ -189,6 +203,29 @@ const MainPage = () => {
                   </MenuItem>
                 </Select>
               </FormControl>
+            </div>
+
+            {/* Template Download Section */}
+            <div className="mt-4 mb-4">
+              <Typography
+                variant="subtitle1"
+                className="font-bold mb-2"
+                color="primary"
+              >
+                Vorlage
+              </Typography>
+              <Divider sx={{ mb: 2 }} />
+              <Button
+                variant="outlined"
+                color="primary"
+                size="small"
+                startIcon={<DownloadIcon />}
+                onClick={handleTemplateDownload}
+                fullWidth
+                sx={{ mt: 1 }}
+              >
+                Kosten-Template herunterladen
+              </Button>
             </div>
 
             {/* Total Cost Sum Box */}
