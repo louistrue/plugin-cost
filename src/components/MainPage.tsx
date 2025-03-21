@@ -18,12 +18,13 @@ import {
   Box,
   Button,
 } from "@mui/material";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import CostUploader from "./CostUploader/index";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import DownloadIcon from "@mui/icons-material/Download";
 import { CostItem } from "./CostUploader/types";
 import KafkaConsole from "./KafkaConsole";
+import { useKafka } from "../contexts/KafkaContext";
 
 // Define a type for uploaded files with date and status
 type UploadedFile = {
@@ -54,6 +55,19 @@ const MainPage = () => {
   const [selectedProject, setSelectedProject] = useState("Projekt 1");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [totalCostSum, setTotalCostSum] = useState<number>(0);
+  const [currentCostData, setCurrentCostData] = useState<CostItem[]>([]);
+
+  // Get the Kafka context for calculating updated costs
+  const { calculateUpdatedTotalCost, ebkpAreaSums } = useKafka();
+
+  // Update the total cost when either the cost data or Kafka area sums change
+  useEffect(() => {
+    if (currentCostData && currentCostData.length > 0) {
+      // Calculate cost using Kafka area data when available
+      const updatedTotalCost = calculateUpdatedTotalCost(currentCostData);
+      setTotalCostSum(updatedTotalCost);
+    }
+  }, [currentCostData, ebkpAreaSums, calculateUpdatedTotalCost]);
 
   // Function to receive uploaded files from CostUploader
   const handleFileUploaded = (
@@ -63,15 +77,23 @@ const MainPage = () => {
     costData?: CostItem[],
     isUpdate?: boolean
   ) => {
+    // Store the most recent cost data for Kafka-based calculations
+    if (costData && costData.length > 0) {
+      setCurrentCostData(costData);
+    }
+
     // Calculate total from cost data if available
     let totalCost = 0;
     if (costData && costData.length > 0) {
+      // The initial total cost is calculated here but will be updated
+      // by the useEffect when Kafka data changes
       totalCost = calculateTotalCost(costData);
     }
 
     // Handle file removal
     if (status === "Gelöscht") {
       setTotalCostSum(0); // Reset the total when a file is removed
+      setCurrentCostData([]); // Clear the current cost data
 
       // Update the file's status to "Gelöscht" instead of removing it
       setUploadedFiles((prev) =>

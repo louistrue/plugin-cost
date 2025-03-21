@@ -24,6 +24,12 @@ export const extractNumber = (
     return null;
   }
 
+  // Check if the value is an eBKP placeholder like {{eBKP:B06.01}}
+  if (typeof value === "string" && value.match(/\{\{eBKP:[^}]+\}\}/)) {
+    // Return null for placeholders - they will be handled separately
+    return null;
+  }
+
   // Special case for Menge - we want to keep the value even if it's 0 or 1
   if (key.toLowerCase().includes("menge")) {
     const numValue = Number(value);

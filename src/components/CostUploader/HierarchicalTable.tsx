@@ -1,9 +1,20 @@
-import { Alert, TableContainer, Paper, Table, TableBody } from "@mui/material";
+import {
+  Alert,
+  TableContainer,
+  Paper,
+  Table,
+  TableBody,
+  Box,
+  Typography,
+  Chip,
+} from "@mui/material";
 import { CostItem, MetaFile } from "./types";
 import { columnWidths } from "./styles";
 import { formatNumber } from "./utils";
 import TableHeader from "./TableHeader";
 import CostTableRow from "./CostTableRow";
+import { useKafka } from "../../contexts/KafkaContext";
+import SyncIcon from "@mui/icons-material/Sync";
 import {
   createTableContainerStyle,
   tableStyle,
@@ -37,8 +48,37 @@ const HierarchicalTable = ({
   toggleRow,
   isMobile,
 }: HierarchicalTableProps) => {
+  // Get isKafkaData helper from context
+  const { isKafkaData } = useKafka();
+
   // Cell styles for alignment and formatting
   const cellStyles: CellStyles = createCellStyles(isMobile);
+
+  // Count items with BIM/IFC data
+  const countItemsWithBimData = (items: CostItem[]): number => {
+    if (!items || !items.length) return 0;
+
+    let count = 0;
+
+    for (const item of items) {
+      // Check if this item has BIM data
+      if (isKafkaData(item.ebkp)) {
+        count++;
+      }
+
+      // Recursively check children
+      if (item.children && item.children.length) {
+        count += countItemsWithBimData(item.children);
+      }
+    }
+
+    return count;
+  };
+
+  // Get count of items with BIM data
+  const bimItemsCount = metaFile?.data
+    ? countItemsWithBimData(metaFile.data)
+    : 0;
 
   // Render a number with hover effect showing the full value
   const renderNumber = (
@@ -62,6 +102,32 @@ const HierarchicalTable = ({
           {metaFile.missingHeaders.join(", ")}
         </Alert>
       )}
+
+      {/* BIM Data Indicator */}
+      {bimItemsCount > 0 && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            mb: 1,
+            mt: 1,
+          }}
+        >
+          <Chip
+            icon={<SyncIcon />}
+            size="small"
+            label={`${bimItemsCount} Positionen mit BIM Daten`}
+            color="info"
+            variant="outlined"
+            sx={{
+              height: 24,
+              "& .MuiChip-label": { fontWeight: 500 },
+            }}
+          />
+        </Box>
+      )}
+
       <TableContainer
         component={Paper}
         elevation={1}

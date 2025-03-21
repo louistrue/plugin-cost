@@ -10,8 +10,16 @@ import {
   Chip,
   Alert,
   Snackbar,
+  Table,
+  TableHead,
+  TableBody,
+  TableCell,
+  TableRow,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import { useKafka } from "../contexts/KafkaContext";
+import SyncIcon from "@mui/icons-material/Sync";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 
 interface Material {
   name: string;
@@ -61,6 +69,9 @@ const KafkaConsole = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [connected, setConnected] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Get the eBKP area sums from context
+  const { ebkpAreaSums } = useKafka();
 
   // Function to add a new message and group it appropriately
   const addMessage = (newMessage: QTOMessage) => {
@@ -237,6 +248,94 @@ const KafkaConsole = () => {
           </Typography>
           {loading && <CircularProgress size={16} sx={{ ml: 1 }} />}
         </Box>
+      </Box>
+
+      {/* Display current eBKP area sums */}
+      <Accordion sx={{ mb: 2 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">eBKP Area Sums</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          {Object.keys(ebkpAreaSums).length > 0 ? (
+            <Box sx={{ maxHeight: 200, overflow: "auto" }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>eBKP Code</TableCell>
+                    <TableCell align="right">Area Sum (m²)</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {Object.entries(ebkpAreaSums).map(([code, area]) => (
+                    <TableRow key={code}>
+                      <TableCell>{code}</TableCell>
+                      <TableCell align="right">
+                        {typeof area === "number"
+                          ? area.toLocaleString("de-CH", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })
+                          : "0.00"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
+          ) : (
+            <Typography variant="body2" color="textSecondary">
+              No eBKP area data received yet
+            </Typography>
+          )}
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Add legend for BIM data indicators */}
+      <Box sx={{ mt: 2, mb: 2 }}>
+        <Accordion>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="subtitle1">Legende: BIM Daten</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ p: 2 }}>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <Chip
+                  icon={<SyncIcon />}
+                  size="small"
+                  label="123.45"
+                  variant="outlined"
+                  color="info"
+                  sx={{ height: 24 }}
+                />
+                <Typography variant="body2">
+                  Werte aus BIM/IFC Daten (ersetzt Excel-Werte)
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <Box
+                  component="span"
+                  sx={{ display: "flex", alignItems: "center" }}
+                >
+                  <Typography variant="body2">123.45</Typography>
+                  <InfoOutlinedIcon
+                    color="info"
+                    fontSize="small"
+                    sx={{ ml: 0.5 }}
+                  />
+                </Box>
+                <Typography variant="body2">
+                  Info-Symbol zeigt BIM-Datenquelle und Zeitstempel an
+                </Typography>
+              </Box>
+
+              <Typography variant="body2" sx={{ fontStyle: "italic", mt: 1 }}>
+                Hinweis: Bei Werten aus BIM-Daten wird die Einheit automatisch
+                auf "m²" gesetzt und die Kosten entsprechend neu berechnet.
+              </Typography>
+            </Box>
+          </AccordionDetails>
+        </Accordion>
       </Box>
 
       {messageGroups.length === 0 && !loading && connected && (
