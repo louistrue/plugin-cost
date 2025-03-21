@@ -1,14 +1,11 @@
 export interface CostItem {
-  ebkp: string;
-  bezeichnung: string;
-  menge: number | null;
-  einheit: string;
-  kennwert: number | null;
-  chf: number | null;
-  totalChf: number | null;
-  kommentar: string;
-  children: CostItem[];
-  expanded: boolean;
+  id: string;
+  name: string;
+  code?: string;
+  level?: number;
+  cost?: number;
+  children?: CostItem[];
+  [key: string]: any;
 }
 
 export interface ExcelRow {
