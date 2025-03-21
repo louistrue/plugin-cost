@@ -78,7 +78,7 @@ const CostTableRow = ({
   // Check if this item or any of its children (recursively) have Kafka data
   const hasKafkaDataInTree = (item: CostItem): boolean => {
     // Check if this item has Kafka data
-    if (isKafkaData(item.ebkp)) return true;
+    if (item.ebkp && isKafkaData(item.ebkp)) return true;
 
     // Check children recursively
     if (item.children && item.children.length > 0) {
@@ -101,7 +101,7 @@ const CostTableRow = ({
 
   // Get appropriate Menge value - use Kafka area data if available for this eBKP code
   const getMengeValue = (
-    ebkpCode: string,
+    ebkpCode: string | undefined,
     originalMenge: number | null | undefined
   ) => {
     // If we have area data for this eBKP code (normalize it first)
@@ -181,24 +181,29 @@ const CostTableRow = ({
       <TableRow
         hover
         sx={{
-          backgroundColor: isKafkaData(item.ebkp)
-            ? "rgba(25, 118, 210, 0.04)"
-            : hasKafkaInTree
-            ? "rgba(25, 118, 210, 0.02)"
-            : "rgba(0, 0, 0, 0.04)",
+          backgroundColor:
+            item.ebkp && isKafkaData(item.ebkp)
+              ? "rgba(25, 118, 210, 0.04)"
+              : hasKafkaInTree
+              ? "rgba(25, 118, 210, 0.02)"
+              : "rgba(0, 0, 0, 0.04)",
           "& > *": { borderBottom: "unset" },
-          borderLeft: isKafkaData(item.ebkp)
-            ? "2px solid rgba(25, 118, 210, 0.6)"
-            : hasKafkaInTree
-            ? "2px solid rgba(25, 118, 210, 0.3)"
-            : "none",
+          borderLeft:
+            item.ebkp && isKafkaData(item.ebkp)
+              ? "2px solid rgba(25, 118, 210, 0.6)"
+              : hasKafkaInTree
+              ? "2px solid rgba(25, 118, 210, 0.3)"
+              : "none",
         }}
       >
         <TableCell sx={{ padding: isMobile ? "8px 4px" : undefined }}>
           {item.children && item.children.length > 0 && (
             <Tooltip
               title={
-                hasKafkaInTree && !expanded
+                hasKafkaInTree &&
+                item.ebkp &&
+                !isKafkaData(item.ebkp) &&
+                !expanded
                   ? "BIM Daten in untergeordneten Positionen"
                   : ""
               }
@@ -208,9 +213,9 @@ const CostTableRow = ({
               <IconButton
                 aria-label="expand row"
                 size="small"
-                onClick={() => onToggle(item.ebkp)}
+                onClick={() => onToggle(item.ebkp || "")}
                 sx={
-                  hasKafkaInTree && !isKafkaData(item.ebkp)
+                  hasKafkaInTree && item.ebkp && !isKafkaData(item.ebkp)
                     ? {
                         color: !expanded ? "info.main" : undefined,
                         opacity: !expanded ? 0.9 : 0.7,
@@ -262,7 +267,7 @@ const CostTableRow = ({
               },
             }}
           >
-            {isKafkaData(item.ebkp) && (
+            {item.ebkp && isKafkaData(item.ebkp) && (
               <Chip
                 icon={<SyncIcon />}
                 size="small"
@@ -282,7 +287,7 @@ const CostTableRow = ({
                 }}
               />
             )}
-            {!isKafkaData(item.ebkp) && hasKafkaInTree && (
+            {!(item.ebkp && isKafkaData(item.ebkp)) && hasKafkaInTree && (
               <>
                 {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
                 <Tooltip
@@ -304,11 +309,13 @@ const CostTableRow = ({
                 </Tooltip>
               </>
             )}
-            {!isKafkaData(item.ebkp) &&
+            {!(item.ebkp && isKafkaData(item.ebkp)) &&
               !hasKafkaInTree &&
               renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
 
-            {isKafkaData(item.ebkp) && <DataSourceInfo ebkpCode={item.ebkp} />}
+            {item.ebkp && isKafkaData(item.ebkp) && (
+              <DataSourceInfo ebkpCode={item.ebkp} />
+            )}
           </Box>
         </TableCell>
         <TableCell
@@ -317,7 +324,9 @@ const CostTableRow = ({
             ...cellStyles.standardBorder,
           }}
         >
-          {isKafkaData(item.ebkp) ? "m²" : processField(item.einheit)}
+          {item.ebkp && isKafkaData(item.ebkp)
+            ? "m²"
+            : processField(item.einheit)}
         </TableCell>
         <TableCell
           sx={{
@@ -339,7 +348,7 @@ const CostTableRow = ({
           }}
         >
           <Box sx={{ display: "flex", alignItems: "center" }}>
-            {isKafkaData(item.ebkp) ? (
+            {item.ebkp && isKafkaData(item.ebkp) ? (
               <Chip
                 size="small"
                 label={renderNumber(getChfValue())}
@@ -421,9 +430,16 @@ const CostTableRow = ({
                 <TableBody>
                   {item.children?.map((childItem: CostItem) => (
                     <CostTableChildRow
-                      key={childItem.ebkp}
+                      key={
+                        childItem.ebkp ??
+                        `child-${Math.random().toString(36).substring(2)}`
+                      }
                       item={childItem}
-                      expanded={expandedRows[childItem.ebkp] || false}
+                      expanded={
+                        childItem.ebkp
+                          ? expandedRows[childItem.ebkp] || false
+                          : false
+                      }
                       onToggle={onToggle}
                       isMobile={isMobile}
                       cellStyles={cellStyles}
