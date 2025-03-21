@@ -25,8 +25,13 @@ interface Classification {
   system: string;
 }
 
-interface Element {
-  id: string;
+// Flattened message format with one element per message
+interface QTOMessage {
+  project: string;
+  filename: string;
+  timestamp: string;
+  file_id: string;
+  element_id: string;
   category: string;
   level: string;
   area: number;
@@ -37,24 +42,62 @@ interface Element {
   classification?: Classification;
 }
 
-interface QTOMessage {
-  project: string;
-  filename: string;
-  timestamp: string;
-  file_id: string;
-  elements: Element[];
-}
-
 // URL for WebSocket connection
 const WEBSOCKET_URL =
   import.meta.env.VITE_WEBSOCKET_URL || "ws://localhost:8001";
 
+// Group related messages by project and file
+interface MessageGroup {
+  project: string;
+  filename: string;
+  file_id: string;
+  latestTimestamp: string;
+  messages: QTOMessage[];
+}
+
 const KafkaConsole = () => {
-  const [messages, setMessages] = useState<QTOMessage[]>([]);
+  const [messageGroups, setMessageGroups] = useState<MessageGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [connected, setConnected] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Function to add a new message and group it appropriately
+  const addMessage = (newMessage: QTOMessage) => {
+    setMessageGroups((prevGroups) => {
+      // Look for an existing group for this project/file
+      const groupKey = `${newMessage.project}-${newMessage.file_id}`;
+      const groupIndex = prevGroups.findIndex(
+        (g) => `${g.project}-${g.file_id}` === groupKey
+      );
+
+      // Create a copy of the groups
+      const newGroups = [...prevGroups];
+
+      if (groupIndex >= 0) {
+        // Update existing group
+        const group = { ...newGroups[groupIndex] };
+        group.messages = [...group.messages, newMessage];
+        // Update timestamp if newer
+        if (newMessage.timestamp > group.latestTimestamp) {
+          group.latestTimestamp = newMessage.timestamp;
+        }
+        newGroups[groupIndex] = group;
+      } else {
+        // Create new group
+        newGroups.push({
+          project: newMessage.project,
+          filename: newMessage.filename,
+          file_id: newMessage.file_id,
+          latestTimestamp: newMessage.timestamp,
+          messages: [newMessage],
+        });
+      }
+
+      // Keep only the 5 most recent groups
+      return newGroups.slice(-5);
+    });
+  };
 
   useEffect(() => {
     // Function to connect to WebSocket server
@@ -88,9 +131,9 @@ const KafkaConsole = () => {
                 return;
               }
 
-              // Otherwise, assume it's a QTO message
+              // Process the incoming message
               console.log("Received Kafka message via WebSocket", parsedData);
-              setMessages((prev) => [parsedData, ...prev].slice(0, 5)); // Keep only 5 most recent messages
+              addMessage(parsedData);
             }
           } catch (err) {
             console.error("Error parsing WebSocket message:", err);
@@ -196,26 +239,26 @@ const KafkaConsole = () => {
         </Box>
       </Box>
 
-      {messages.length === 0 && !loading && connected && (
+      {messageGroups.length === 0 && !loading && connected && (
         <Typography variant="body2" color="textSecondary" sx={{ py: 2 }}>
           Waiting for messages...
         </Typography>
       )}
 
-      {messages.map((message, index) => (
-        <Accordion key={index} sx={{ mb: 1 }}>
+      {messageGroups.map((group, groupIndex) => (
+        <Accordion key={groupIndex} sx={{ mb: 1 }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography sx={{ flexGrow: 1 }}>
-              {message.project} - {message.elements.length} elements
+              {group.project} - {group.messages.length} elements
             </Typography>
             <Typography variant="caption" color="textSecondary" sx={{ mr: 2 }}>
-              {new Date(message.timestamp).toLocaleString()}
+              {new Date(group.latestTimestamp).toLocaleString()}
             </Typography>
           </AccordionSummary>
           <AccordionDetails>
             <Box>
               <Typography variant="body2" sx={{ mb: 1 }}>
-                <strong>File:</strong> {message.filename}
+                <strong>File:</strong> {group.filename}
               </Typography>
 
               <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
@@ -223,8 +266,18 @@ const KafkaConsole = () => {
               </Typography>
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mb: 2 }}>
                 {Object.entries(
-                  message.elements.reduce((acc, element) => {
-                    acc[element.category] = (acc[element.category] || 0) + 1;
+                  group.messages.reduce((acc, msg) => {
+                    try {
+                      if (msg.category) {
+                        acc[msg.category] = (acc[msg.category] || 0) + 1;
+                      }
+                    } catch (err) {
+                      console.error(
+                        "Error processing message categories:",
+                        err,
+                        msg
+                      );
+                    }
                     return acc;
                   }, {} as Record<string, number>)
                 ).map(([category, count]) => (
@@ -242,10 +295,19 @@ const KafkaConsole = () => {
               </Typography>
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                 {Object.entries(
-                  message.elements.reduce((acc, element) => {
-                    if (element.classification) {
-                      const id = element.classification.id;
-                      acc[id] = (acc[id] || 0) + 1;
+                  group.messages.reduce((acc, msg) => {
+                    try {
+                      // Handle new format with single element
+                      if (msg.classification?.id) {
+                        const id = msg.classification.id;
+                        acc[id] = (acc[id] || 0) + 1;
+                      }
+                    } catch (err) {
+                      console.error(
+                        "Error processing message classifications:",
+                        err,
+                        msg
+                      );
                     }
                     return acc;
                   }, {} as Record<string, number>)

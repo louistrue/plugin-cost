@@ -20,8 +20,13 @@ interface Classification {
   system: string;
 }
 
-interface Element {
-  id: string;
+// Flattened message format with one element per message
+interface QTOMessage {
+  project: string;
+  filename: string;
+  timestamp: string;
+  file_id: string;
+  element_id: string;
   category: string;
   level: string;
   area: number;
@@ -30,14 +35,6 @@ interface Element {
   ebkph: string;
   materials: Material[];
   classification?: Classification;
-}
-
-interface QTOMessage {
-  project: string;
-  filename: string;
-  timestamp: string;
-  file_id: string;
-  elements: Element[];
 }
 
 // Create a simplified mock WebSocket interface to avoid 'this' context issues
@@ -53,7 +50,7 @@ interface MockWebSocket {
 }
 
 const KafkaConsumer = () => {
-  const [message, setMessage] = useState<QTOMessage | null>(null);
+  const [messages, setMessages] = useState<QTOMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [connected, setConnected] = useState<boolean>(false);
@@ -74,7 +71,10 @@ const KafkaConsumer = () => {
       const handleMessage = (data: string) => {
         try {
           const parsedData = JSON.parse(data);
-          setMessage(parsedData);
+          // Store message in state
+          setMessages((prevMessages) =>
+            [...prevMessages, parsedData].slice(-10)
+          ); // Keep last 10 messages
         } catch (err: unknown) {
           console.error("Failed to parse message:", err);
           setError("Failed to parse message");
@@ -106,113 +106,80 @@ const KafkaConsumer = () => {
           mockWs.handlers.onOpen();
         }
 
-        // Send mock message after 2 seconds
+        // Send mock message after 2 seconds - flat format
         setTimeout(() => {
           const mockQtoMessage: QTOMessage = {
             project: "4_DT_random_C_ebkp",
             filename: "4_DT_random_C_ebkp.ifc",
             timestamp: "2025-03-21T09:34:57.169047Z",
             file_id: "4_DT_random_C_ebkp.ifc_2025-03-21T09:34:57.169047Z",
-            elements: [
+            element_id: "3DqaUydM99ehywE4_2hm1u",
+            category: "ifcwall",
+            level: "U1.UG_RDOK",
+            area: 68.894,
+            is_structural: true,
+            is_external: false,
+            ebkph: "C4.3",
+            materials: [
               {
-                id: "3DqaUydM99ehywE4_2hm1u",
-                category: "ifcwall",
-                level: "U1.UG_RDOK",
-                area: 68.894,
-                is_structural: true,
-                is_external: false,
-                ebkph: "C4.3",
-                materials: [
-                  {
-                    name: "_Holz_wg",
-                    fraction: 0.04255,
-                    volume: 1.35783,
-                  },
-                  {
-                    name: "_Staenderkonstruktion_ungedaemmt_wg",
-                    fraction: 0.10638,
-                    volume: 3.39458,
-                  },
-                  {
-                    name: "_Windpaper_wg",
-                    fraction: 0.0,
-                    volume: 0.0,
-                  },
-                  {
-                    name: "_Gipsfaserplatte_wg",
-                    fraction: 0.07448,
-                    volume: 2.37622,
-                  },
-                  {
-                    name: "_Holzwerkstoffplatte_wg",
-                    fraction: 0.18085,
-                    volume: 5.77078,
-                  },
-                  {
-                    name: "_Staenderkonstruktion_gedaemmt_wg",
-                    fraction: 0.59575,
-                    volume: 19.00965,
-                  },
-                ],
-                classification: {
-                  id: "C4.3",
-                  name: "Balkon",
-                  system: "EBKP",
-                },
+                name: "_Holz_wg",
+                fraction: 0.04255,
+                volume: 1.35783,
               },
               {
-                id: "3DqaUydM99ehywE4_2hm2J",
-                category: "ifcwall",
-                level: "U1.UG_RDOK",
-                area: 63.369,
-                is_structural: true,
-                is_external: false,
-                ebkph: "C1",
-                materials: [
-                  {
-                    name: "_Gipsfaserplatte_wg",
-                    fraction: 0.2105,
-                    volume: 5.01128,
-                  },
-                  {
-                    name: "_Staenderkonstruktion_gedaemmt_wg",
-                    fraction: 0.78946,
-                    volume: 18.79235,
-                  },
-                ],
-                classification: {
-                  id: "C1",
-                  name: "Bodenplatte, Fundament",
-                  system: "EBKP",
-                },
+                name: "_Staenderkonstruktion_ungedaemmt_wg",
+                fraction: 0.10638,
+                volume: 3.39458,
               },
               {
-                id: "3DqaUydM99ehywE4_2hm37",
-                category: "ifcwall",
-                level: "U1.UG_RDOK",
-                area: 63.703,
-                is_structural: true,
-                is_external: false,
-                ebkph: "C1.5",
-                materials: [
-                  {
-                    name: "_Beton_C30-37_wg",
-                    fraction: 1.0,
-                    volume: 18.92857,
-                  },
-                ],
-                classification: {
-                  id: "C1.5",
-                  name: "Tragende Bodenplatte",
-                  system: "EBKP",
-                },
+                name: "_Windpaper_wg",
+                fraction: 0.0,
+                volume: 0.0,
               },
             ],
+            classification: {
+              id: "C4.3",
+              name: "Balkon",
+              system: "EBKP",
+            },
           };
 
           if (mockWs.handlers.onMessage) {
             mockWs.handlers.onMessage(JSON.stringify(mockQtoMessage));
           }
+
+          // Send another message 1 second later
+          setTimeout(() => {
+            const mockQtoMessage2: QTOMessage = {
+              project: "4_DT_random_C_ebkp",
+              filename: "4_DT_random_C_ebkp.ifc",
+              timestamp: "2025-03-21T09:34:58.169047Z",
+              file_id: "4_DT_random_C_ebkp.ifc_2025-03-21T09:34:57.169047Z",
+              element_id: "3DqaUydM99ehywE4_2hm2J",
+              category: "ifcwall",
+              level: "U1.UG_RDOK",
+              area: 63.369,
+              is_structural: true,
+              is_external: false,
+              ebkph: "C1",
+              materials: [
+                {
+                  name: "_Gipsfaserplatte_wg",
+                  fraction: 0.2105,
+                  volume: 5.01128,
+                },
+              ],
+              classification: {
+                id: "C1",
+                name: "Bodenplatte, Fundament",
+                system: "EBKP",
+              },
+            };
+
+            if (mockWs.handlers.onMessage) {
+              mockWs.handlers.onMessage(JSON.stringify(mockQtoMessage2));
+            }
+          }, 1000);
         }, 2000);
       }, 1000);
 
@@ -228,6 +195,19 @@ const KafkaConsumer = () => {
     // Cleanup on component unmount
     return cleanup;
   }, []);
+
+  // Group messages by project and file
+  const groupedMessages = messages.reduce<Record<string, QTOMessage[]>>(
+    (acc, message) => {
+      const key = `${message.project}-${message.filename}`;
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+      acc[key].push(message);
+      return acc;
+    },
+    {}
+  );
 
   return (
     <Box sx={{ mt: 3 }}>
@@ -256,59 +236,84 @@ const KafkaConsumer = () => {
           {loading && <CircularProgress size={20} sx={{ ml: 2 }} />}
         </Box>
 
-        {message && (
-          <Box>
-            <Typography variant="h6" gutterBottom>
-              Project: {message.project}
-            </Typography>
-            <Typography variant="body1" gutterBottom>
-              File: {message.filename}
-            </Typography>
-            <Typography variant="body1" gutterBottom>
-              Timestamp: {new Date(message.timestamp).toLocaleString()}
-            </Typography>
-            <Typography variant="body1" gutterBottom>
-              Elements: {message.elements.length}
-            </Typography>
-
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="h6" gutterBottom>
-                Elements by Category:
-              </Typography>
-              {Object.entries(
-                message.elements.reduce((acc, element) => {
-                  acc[element.category] = (acc[element.category] || 0) + 1;
-                  return acc;
-                }, {} as Record<string, number>)
-              ).map(([category, count]) => (
-                <Typography key={category} variant="body2">
-                  {category}: {count}
+        {messages.length > 0 && (
+          <>
+            {Object.entries(groupedMessages).map(([key, projectMessages]) => (
+              <Box key={key} sx={{ mb: 4 }}>
+                <Typography variant="h6" gutterBottom>
+                  Project: {projectMessages[0].project}
                 </Typography>
-              ))}
-            </Box>
-
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="h6" gutterBottom>
-                Elements by Classification:
-              </Typography>
-              {Object.entries(
-                message.elements.reduce((acc, element) => {
-                  if (element.classification) {
-                    const id = element.classification.id;
-                    acc[id] = (acc[id] || 0) + 1;
-                  }
-                  return acc;
-                }, {} as Record<string, number>)
-              ).map(([id, count]) => (
-                <Typography key={id} variant="body2">
-                  {id}: {count}
+                <Typography variant="body1" gutterBottom>
+                  File: {projectMessages[0].filename}
                 </Typography>
-              ))}
-            </Box>
-          </Box>
+                <Typography variant="body1" gutterBottom>
+                  Elements Received: {projectMessages.length}
+                </Typography>
+                <Typography variant="body1" gutterBottom>
+                  Latest Timestamp:{" "}
+                  {new Date(
+                    projectMessages[projectMessages.length - 1].timestamp
+                  ).toLocaleString()}
+                </Typography>
+
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="h6" gutterBottom>
+                    Elements by Category:
+                  </Typography>
+                  {Object.entries(
+                    projectMessages.reduce((acc, msg) => {
+                      try {
+                        if (msg.category) {
+                          acc[msg.category] = (acc[msg.category] || 0) + 1;
+                        }
+                      } catch (err) {
+                        console.error(
+                          "Error processing message categories:",
+                          err,
+                          msg
+                        );
+                      }
+                      return acc;
+                    }, {} as Record<string, number>)
+                  ).map(([category, count]) => (
+                    <Typography key={category} variant="body2">
+                      {category}: {count}
+                    </Typography>
+                  ))}
+                </Box>
+
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="h6" gutterBottom>
+                    Elements by Classification:
+                  </Typography>
+                  {Object.entries(
+                    projectMessages.reduce((acc, msg) => {
+                      try {
+                        if (msg.classification?.id) {
+                          const id = msg.classification.id;
+                          acc[id] = (acc[id] || 0) + 1;
+                        }
+                      } catch (err) {
+                        console.error(
+                          "Error processing message classifications:",
+                          err,
+                          msg
+                        );
+                      }
+                      return acc;
+                    }, {} as Record<string, number>)
+                  ).map(([id, count]) => (
+                    <Typography key={id} variant="body2">
+                      {id}: {count}
+                    </Typography>
+                  ))}
+                </Box>
+              </Box>
+            ))}
+          </>
         )}
 
-        {!message && !loading && connected && (
+        {messages.length === 0 && !loading && connected && (
           <Typography>Waiting for messages...</Typography>
         )}
       </Paper>
