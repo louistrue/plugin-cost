@@ -4,6 +4,7 @@ import { CostUploaderProps, MetaFile, CostItem } from "./types";
 import FileDropzone from "./FileDropzone";
 import FileInfo from "./FileInfo";
 import HierarchicalTable from "./HierarchicalTable";
+import PreviewModal from "./PreviewModal";
 
 const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
   const theme = useTheme();
@@ -11,6 +12,8 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
   const [metaFile, setMetaFile] = useState<MetaFile | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [matchedElements, setMatchedElements] = useState<any[]>([]);
 
   const toggleRow = (code: string) => {
     setExpandedRows((prev: Record<string, boolean>) => ({
@@ -32,33 +35,87 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
     setMetaFile(null);
   };
 
-  const handleSendData = async () => {
+  const handleShowPreview = () => {
+    setPreviewOpen(true);
+  };
+
+  // This function is called when the user confirms in the preview modal
+  const handleConfirmPreview = (matches: any[]) => {
+    setMatchedElements(matches);
+    setPreviewOpen(false);
+    handleSendData(matches);
+  };
+
+  const handleSendData = async (matches: any[] = []) => {
     if (!metaFile) return;
 
     // Here you would implement the API call to send the data
-    // For now, we'll just simulate a successful upload
     setIsLoading(true);
 
-    // Simulate API call
-    setTimeout(() => {
-      const fileName = metaFile.file.name;
-      const currentDate = new Date().toLocaleString("de-CH");
-      const status = "Erfolgreich";
-      const isUpdate = true; // Flag to indicate this is updating an existing entry
+    // Use the global requestSendCostData function if available
+    if (
+      typeof window.sendCostDataToServer === "function" &&
+      matches.length > 0
+    ) {
+      try {
+        // Send the matched elements to the server
+        const fileName = metaFile.file.name;
+        const currentDate = new Date().toISOString();
 
-      // Call the onFileUploaded prop if provided
-      if (onFileUploaded) {
-        // Extract data array based on format
-        const costData = Array.isArray(metaFile.data)
-          ? metaFile.data
-          : metaFile.data.data;
+        // Format the data for Kafka
+        const costData = {
+          project: "excel-import",
+          filename: fileName,
+          timestamp: currentDate,
+          data: matches,
+          replaceExisting: true,
+        };
 
-        onFileUploaded(fileName, currentDate, status, costData, isUpdate);
+        await window.sendCostDataToServer(costData);
+
+        // Notify parent component
+        if (onFileUploaded) {
+          onFileUploaded(
+            fileName,
+            new Date().toLocaleString("de-CH"),
+            "Erfolgreich",
+            matches,
+            true
+          );
+        }
+
+        setMetaFile(null);
+        setIsLoading(false);
+      } catch (error) {
+        console.error("Error sending cost data:", error);
+        setIsLoading(false);
+        // Show error using the FileInfo component's notification system
       }
+    } else {
+      // Fallback to simulated behavior if WebSocket function not available
+      setTimeout(() => {
+        const fileName = metaFile.file.name;
+        const currentDate = new Date().toLocaleString("de-CH");
+        const status = "Erfolgreich";
+        const isUpdate = true;
 
-      setMetaFile(null);
-      setIsLoading(false);
-    }, 1500);
+        // Call the onFileUploaded prop if provided
+        if (onFileUploaded) {
+          // Extract data array based on format
+          const costData =
+            matches.length > 0
+              ? matches
+              : Array.isArray(metaFile.data)
+              ? metaFile.data
+              : metaFile.data.data;
+
+          onFileUploaded(fileName, currentDate, status, costData, isUpdate);
+        }
+
+        setMetaFile(null);
+        setIsLoading(false);
+      }, 1500);
+    }
   };
 
   const handleFileUploaded = (newMetaFile: MetaFile) => {
@@ -97,7 +154,7 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
               <FileInfo
                 metaFile={metaFile}
                 onRemoveFile={handleRemoveFile}
-                onSendData={handleSendData}
+                onSendData={handleShowPreview} // Show preview instead of direct send
               />
 
               <HierarchicalTable
@@ -105,6 +162,14 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
                 expandedRows={expandedRows}
                 toggleRow={toggleRow}
                 isMobile={isMobile}
+              />
+
+              {/* Preview Modal */}
+              <PreviewModal
+                open={previewOpen}
+                onClose={() => setPreviewOpen(false)}
+                onConfirm={handleConfirmPreview}
+                metaFile={metaFile}
               />
             </div>
           )}

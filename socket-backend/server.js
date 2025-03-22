@@ -162,6 +162,20 @@ const server = http.createServer((req, res) => {
 
     // Find potential matches (codes that should match but don't)
     const potentialMatches = [];
+    const automaticMatches = [];
+
+    ifcCodes.forEach((ifcCode) => {
+      const match = findBestEbkphMatch(ifcCode.code);
+      if (match && match.method !== "direct") {
+        automaticMatches.push({
+          ifcCode: ifcCode.code,
+          matchedWith: match.code,
+          method: match.method,
+          unitCost: match.costInfo.cost_unit,
+          elementCount: ifcCode.elementCount,
+        });
+      }
+    });
 
     excelCodes.forEach((excelCode) => {
       // Check for close matches that don't match exactly
@@ -200,6 +214,7 @@ const server = http.createServer((req, res) => {
           excelCodes,
           ifcCodes,
           potentialMatches,
+          automaticMatches,
           matchingCodes: excelCodes
             .filter((ec) => ifcCodes.some((ic) => ic.code === ec.code))
             .map((ec) => ec.code),
@@ -217,6 +232,16 @@ const server = http.createServer((req, res) => {
       JSON.stringify({
         costCount: Object.keys(unitCostsByEbkph).length,
         ebkphCodes: Object.keys(unitCostsByEbkph),
+      })
+    );
+  }
+  // Add handler for reapplying costs to all elements
+  else if (req.url === "/reapply_costs") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "success",
+        message: "This endpoint is not implemented in the current version.",
       })
     );
   }
@@ -394,9 +419,10 @@ wss.on("connection", (ws, req) => {
               // Normalize the code for consistent lookup
               const normalizedCode = normalizeEbkpCode(item.ebkph);
 
+              // Store ONLY what we need - focus on the unit cost (kennwert)
               unitCostsByEbkph[normalizedCode] = {
-                cost_unit: parseFloat(item.cost_unit),
-                category: item.category || "",
+                cost_unit: parseFloat(item.cost_unit || item.kennwert || 0),
+                category: item.category || item.bezeichnung || "",
                 timestamp: message.data.timestamp || new Date().toISOString(),
                 project: message.data.project || "excel-import",
                 filename: message.data.filename || "cost-data.xlsx",
@@ -405,6 +431,10 @@ wss.on("connection", (ws, req) => {
                 ebkph3,
                 originalCode: item.ebkph,
               };
+
+              console.log(
+                `Stored unit cost for EBKPH ${item.ebkph} (normalized: ${normalizedCode}): ${unitCostsByEbkph[normalizedCode].cost_unit}`
+              );
             }
           });
 
@@ -585,6 +615,150 @@ wss.on("connection", (ws, req) => {
               type: "error",
               status: "error",
               message: `Error processing code matching request: ${error.message}`,
+            })
+          );
+        }
+      } else if (message.type === "reapply_costs") {
+        try {
+          console.log(
+            `Client ${clientId} requested to reapply cost data to all elements`
+          );
+
+          if (Object.keys(unitCostsByEbkph).length === 0) {
+            ws.send(
+              JSON.stringify({
+                type: "reapply_costs_response",
+                status: "warning",
+                message:
+                  "No unit costs available to apply. Please upload an Excel file with cost data first.",
+              })
+            );
+            return;
+          }
+
+          // Process all stored elements
+          const enhancedElements = [];
+          let processedCount = 0;
+          let matchedCodes = {};
+
+          Object.keys(ifcElementsByEbkph).forEach((ebkpCode) => {
+            const elements = ifcElementsByEbkph[ebkpCode];
+
+            // Find the best match for this EBKPH code
+            const bestMatch = findBestEbkphMatch(ebkpCode);
+
+            if (bestMatch) {
+              const costInfo = bestMatch.costInfo;
+              const costUnit = costInfo.cost_unit || 0;
+
+              console.log(
+                `Found ${bestMatch.method} match for EBKPH ${ebkpCode}: ${bestMatch.code}, unit cost = ${costUnit}`
+              );
+
+              if (!matchedCodes[bestMatch.code]) {
+                matchedCodes[bestMatch.code] = {
+                  elementCount: 0,
+                  costUnit: costUnit,
+                };
+              }
+
+              // Process all elements with this code
+              elements.forEach((element) => {
+                const area = parseFloat(element.area || 0);
+
+                // Create enhanced element
+                const enhancedElement = {
+                  ...element,
+                  cost_unit: costUnit,
+                  cost: costUnit * (area || 1),
+                  cost_source: costInfo.filename,
+                  cost_timestamp: costInfo.timestamp,
+                  cost_match_method: bestMatch.method,
+                };
+
+                // Ensure EBKPH components are present
+                if (costInfo.ebkph1 && !enhancedElement.ebkph1) {
+                  enhancedElement.ebkph1 = costInfo.ebkph1;
+                }
+                if (costInfo.ebkph2 && !enhancedElement.ebkph2) {
+                  enhancedElement.ebkph2 = costInfo.ebkph2;
+                }
+                if (costInfo.ebkph3 && !enhancedElement.ebkph3) {
+                  enhancedElement.ebkph3 = costInfo.ebkph3;
+                }
+
+                // Add to list for batch processing
+                enhancedElements.push(enhancedElement);
+                processedCount++;
+                matchedCodes[bestMatch.code].elementCount++;
+              });
+            }
+          });
+
+          // Send all enhanced elements to Kafka
+          if (enhancedElements.length > 0) {
+            console.log(
+              `Sending ${enhancedElements.length} enhanced IFC elements to Kafka`
+            );
+
+            // Batch process in chunks of 50 to avoid overwhelming Kafka
+            const batchSize = 50;
+            for (let i = 0; i < enhancedElements.length; i += batchSize) {
+              const batch = enhancedElements.slice(i, i + batchSize);
+
+              // Create promises for sending each element
+              const sendPromises = batch.map((element) =>
+                sendEnhancedElementToKafka(element)
+              );
+
+              // Wait for all sends to complete
+              await Promise.all(sendPromises);
+
+              console.log(
+                `Processed batch ${i / batchSize + 1}/${Math.ceil(
+                  enhancedElements.length / batchSize
+                )}`
+              );
+            }
+          }
+
+          // Notify all clients about the matches
+          if (Object.keys(matchedCodes).length > 0) {
+            const matchInfo = {
+              type: "cost_match_info",
+              matches: matchedCodes,
+              matchCount: Object.keys(matchedCodes).length,
+              elementCount: processedCount,
+              timestamp: new Date().toISOString(),
+            };
+
+            broadcast(JSON.stringify(matchInfo));
+            console.log(
+              `Broadcast cost match info: ${processedCount} elements matched across ${
+                Object.keys(matchedCodes).length
+              } EBKPH codes`
+            );
+          }
+
+          // Send acknowledgment back to client
+          ws.send(
+            JSON.stringify({
+              type: "reapply_costs_response",
+              status: "success",
+              message: `Successfully applied costs to ${processedCount} elements across ${
+                Object.keys(matchedCodes).length
+              } EBKPH codes.`,
+              matchCount: Object.keys(matchedCodes).length,
+              elementCount: processedCount,
+            })
+          );
+        } catch (error) {
+          console.error(`Error reapplying costs: ${error}`);
+          ws.send(
+            JSON.stringify({
+              type: "reapply_costs_response",
+              status: "error",
+              message: `Error reapplying costs: ${error.message}`,
             })
           );
         }
@@ -808,9 +982,24 @@ async function run() {
               // Normalize the code for lookup
               const normalizedCode = normalizeEbkpCode(elementData.ebkph);
 
-              if (unitCostsByEbkph[normalizedCode]) {
+              // Debug log all available cost codes for comparison
+              if (Object.keys(unitCostsByEbkph).length > 0) {
+                console.log(
+                  `Looking for cost data match for element EBKPH ${elementData.ebkph} (normalized: ${normalizedCode})`
+                );
+                console.log(
+                  `Available cost codes: ${Object.keys(unitCostsByEbkph).join(
+                    ", "
+                  )}`
+                );
+              }
+
+              // Find the best match for this code
+              const bestMatch = findBestEbkphMatch(normalizedCode);
+
+              if (bestMatch) {
                 // Add cost information to the element
-                const costInfo = unitCostsByEbkph[normalizedCode];
+                const costInfo = bestMatch.costInfo;
                 const area = parseFloat(elementData.area || 0);
                 const costUnit = costInfo.cost_unit || 0;
 
@@ -821,6 +1010,7 @@ async function run() {
                   cost: costUnit * (area || 1), // Calculate total cost
                   cost_source: costInfo.filename,
                   cost_timestamp: costInfo.timestamp,
+                  cost_match_method: bestMatch.method,
                 };
 
                 // Make sure EBKPH components are present
@@ -835,11 +1025,18 @@ async function run() {
                 }
 
                 console.log(
-                  `Added cost data to element with EBKPH ${elementData.ebkph} (normalized: ${normalizedCode}): unit cost = ${costUnit}, area = ${area}, total cost = ${enhancedElement.cost}`
+                  `MATCH FOUND (${bestMatch.method}): Added cost data to element with EBKPH ${elementData.ebkph} (normalized: ${normalizedCode}): unit cost = ${costUnit}, area = ${area}, total cost = ${enhancedElement.cost}`
                 );
 
                 // Send enhanced element to cost topic
                 await sendEnhancedElementToKafka(enhancedElement);
+
+                // Also notify clients about this match
+                broadcastCostMatch(bestMatch.code, costUnit, 1);
+              } else {
+                console.log(
+                  `No cost data found for EBKPH code ${elementData.ebkph} (normalized: ${normalizedCode})`
+                );
               }
             }
 
@@ -1017,9 +1214,6 @@ server.listen(config.websocket.port, () => {
   // Load existing elements from file
   loadElementsFromFile();
 
-  // Setup test unit costs
-  setupTestUnitCosts();
-
   // Start the Kafka connection and ensure topics exist
   run().catch(console.error);
 
@@ -1040,57 +1234,34 @@ server.listen(config.websocket.port, () => {
   }, config.storage.saveInterval);
 });
 
-// When server starts up, create some example unit costs for testing
-function setupTestUnitCosts() {
-  // Add some example unit costs to test with
-  const normalizedC21 = normalizeEbkpCode("C2.1");
-  unitCostsByEbkph[normalizedC21] = {
-    cost_unit: 250.0, // Cost per square meter for interior walls
-    category: "Interior Wall",
-    timestamp: new Date().toISOString(),
-    project: "test-costs",
-    filename: "test-cost-data.xlsx",
-    ebkph1: "C2",
-    ebkph2: "1",
-    ebkph3: "",
-  };
-
-  const normalizedC22 = normalizeEbkpCode("C2.2");
-  unitCostsByEbkph[normalizedC22] = {
-    cost_unit: 350.0, // Cost per square meter for exterior walls
-    category: "Exterior Wall",
-    timestamp: new Date().toISOString(),
-    project: "test-costs",
-    filename: "test-cost-data.xlsx",
-    ebkph1: "C2",
-    ebkph2: "2",
-    ebkph3: "",
-  };
-
-  console.log(
-    `Set up test unit costs for EBKPH codes ${normalizedC21} and ${normalizedC22}`
-  );
-}
-
 // Normalize EBKPH code (used for matching)
 function normalizeEbkpCode(code) {
   if (!code) return code;
 
   // Convert to uppercase for consistent matching
-  const upperCode = code.toUpperCase();
+  const upperCode = code.toUpperCase().trim();
 
-  // Remove leading zeros from each number segment
+  // Special case handling for common variations
   // Handle patterns like:
   // "C01.01" becomes "C1.1"
   // "C1.1" remains "C1.1"
-  // "C1" remains "C1"
+  // "C01.1" becomes "C1.1"
+  // "C1.01" becomes "C1.1"
   // "C01" becomes "C1"
+  // "C 1" becomes "C1"
+  // "C 1.1" becomes "C1.1"
+
+  // Remove any spaces
+  let normalized = upperCode.replace(/\s+/g, "");
 
   // First try the format with dots
-  let normalized = upperCode.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
+  normalized = normalized.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
 
   // Then handle codes without dots
   normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
+
+  // Handle special case "C.1" format (missing number after letter)
+  normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
 
   // Debug log
   if (normalized !== upperCode) {
@@ -1213,4 +1384,73 @@ function broadcastElementUpdate() {
   console.log(
     `Broadcast element update: ${processedElementIds.size} elements available`
   );
+}
+
+// Add a function to broadcast cost match information for a single code
+function broadcastCostMatch(ebkpCode, costUnit, elementCount) {
+  const matchInfo = {
+    type: "cost_match_info",
+    matches: {
+      [ebkpCode]: {
+        elementCount,
+        costUnit,
+      },
+    },
+    matchCount: 1,
+    elementCount: elementCount,
+    timestamp: new Date().toISOString(),
+  };
+
+  broadcast(JSON.stringify(matchInfo));
+  console.log(
+    `Broadcast cost match for code ${ebkpCode}: ${elementCount} element(s), unit cost = ${costUnit}`
+  );
+}
+
+// Add this function to find the best match for an EBKP code
+function findBestEbkphMatch(normalizedCode) {
+  if (!normalizedCode) return null;
+
+  // First, direct match
+  if (unitCostsByEbkph[normalizedCode]) {
+    return {
+      code: normalizedCode,
+      costInfo: unitCostsByEbkph[normalizedCode],
+      method: "direct",
+    };
+  }
+
+  // Next, try removing all non-alphanumeric characters
+  const cleanedCode = normalizedCode.replace(/[^A-Z0-9]/g, "");
+  for (const [costCode, costInfo] of Object.entries(unitCostsByEbkph)) {
+    const cleanedCostCode = costCode.replace(/[^A-Z0-9]/g, "");
+    if (cleanedCostCode === cleanedCode) {
+      return {
+        code: costCode,
+        costInfo,
+        method: "simplified",
+      };
+    }
+  }
+
+  // Try to match just the major segments (like C2 part of C2.1)
+  const majorSegmentMatch = normalizedCode.match(/^([A-Z]\d+)/);
+  if (majorSegmentMatch && majorSegmentMatch[1]) {
+    const majorSegment = majorSegmentMatch[1];
+
+    for (const [costCode, costInfo] of Object.entries(unitCostsByEbkph)) {
+      if (
+        costCode.startsWith(majorSegment + ".") ||
+        costCode === majorSegment
+      ) {
+        return {
+          code: costCode,
+          costInfo,
+          method: "major-segment",
+        };
+      }
+    }
+  }
+
+  return null;
 }

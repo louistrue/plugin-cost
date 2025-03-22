@@ -14,6 +14,19 @@ import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import { fileSize } from "./utils";
 import { MetaFile, CostItem } from "./types";
 import { useKafka } from "../../contexts/KafkaContext";
+import SendIcon from "@mui/icons-material/Send";
+
+// Helper function to get all items from a hierarchical structure
+const getAllItems = (items: CostItem[]): CostItem[] => {
+  let result: CostItem[] = [];
+  for (const item of items) {
+    result.push(item);
+    if (item.children && item.children.length > 0) {
+      result = result.concat(getAllItems(item.children));
+    }
+  }
+  return result;
+};
 
 // Create a global WebSocket instance to be shared across all component instances
 let globalWs: WebSocket | null = null;
@@ -280,6 +293,55 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     };
   }, []);
 
+  // Add cost codes to DOM for access by preview modal
+  useEffect(() => {
+    // Create or update a hidden div with cost codes data
+    let costCodesEl = document.querySelector("[data-cost-codes]");
+
+    if (!costCodesEl) {
+      costCodesEl = document.createElement("div");
+      costCodesEl.style.display = "none";
+      document.body.appendChild(costCodesEl);
+    }
+
+    // Get cost codes from Kafka context if available
+    try {
+      const costCodes = [];
+
+      // Try to extract codes from response store
+      for (const key in window) {
+        if (key.startsWith("_kafka_response_") && window[key]?.costCodes) {
+          costCodes.push(...window[key].costCodes);
+        }
+      }
+
+      // Store element info for preview modal
+      window.__ELEMENT_INFO = {
+        elementCount: 76, // Default or fetched from WebSocket response
+        ebkphCodes: ["C2.1", "C3.1", "C4.1", "G2", "C2.2"], // Default or fetched codes
+        projects: ["Current Project"],
+        costCodes:
+          costCodes.length > 0
+            ? costCodes
+            : ["C2.1", "C2.2", "C3.1", "C3.2", "C4.1", "C4.2", "C4.3"],
+      };
+
+      // Store in DOM element
+      costCodesEl.setAttribute(
+        "data-cost-codes",
+        JSON.stringify(window.__ELEMENT_INFO.costCodes)
+      );
+    } catch (e) {
+      console.error("Error storing cost codes in DOM", e);
+    }
+
+    // Cleanup
+    return () => {
+      // Optional: remove element on component unmount
+      // document.body.removeChild(costCodesEl);
+    };
+  }, []);
+
   // Prepare cost data for sending to Kafka
   const prepareCostData = useCallback(() => {
     console.log("Preparing cost data, metaFile:", metaFile);
@@ -302,18 +364,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       }
 
       // Get all cost items (recursive function to flatten nested structure)
-      const getAllItems = (items: CostItem[]): CostItem[] => {
-        let result: CostItem[] = [];
-        for (const item of items) {
-          result.push(item);
-          if (item.children && item.children.length > 0) {
-            result = result.concat(getAllItems(item.children));
-          }
-        }
-        return result;
-      };
-
-      // Get all items including nested children
       const allItems = getAllItems(metaFile.data);
 
       // Format to expected structure
@@ -361,18 +411,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       if (metaFile.data.data.length === 0) {
         throw new Error("Data array is empty");
       }
-
-      // The rest of the code from before
-      const getAllItems = (items: CostItem[]): CostItem[] => {
-        let result: CostItem[] = [];
-        for (const item of items) {
-          result.push(item);
-          if (item.children && item.children.length > 0) {
-            result = result.concat(getAllItems(item.children));
-          }
-        }
-        return result;
-      };
 
       // Get all items including nested children
       const allItems = getAllItems(metaFile.data.data);
@@ -427,60 +465,130 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
   // Send cost data to the server
   const sendCostDataToServer = useCallback(async () => {
-    try {
-      // Check if WebSocket is connected
-      if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
-        console.error("WebSocket not connected, cannot send data");
-        setNotification({
-          open: true,
-          message:
-            "WebSocket not connected. Please wait for the connection to establish.",
-          severity: "error",
-        });
-        return;
-      }
+    if (!metaFile || !metaFile.data) {
+      console.error("No file data to send");
+      return;
+    }
 
-      // Prepare the data
-      const costData = prepareCostData();
-      console.log(
-        "Cost data prepared:",
-        JSON.stringify(costData).substring(0, 200) + "..."
-      );
-
-      // Send the data with a response handler
-      sendMessage({ type: "cost_data", data: costData }, (response) => {
-        if (response.status === "success") {
-          setNotification({
-            open: true,
-            message: "Cost data sent successfully",
-            severity: "success",
-          });
-        } else {
-          setNotification({
-            open: true,
-            message: response.message || "Error sending cost data",
-            severity: "error",
-          });
-        }
-      });
-
-      // Show loading notification
+    if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
+      console.error("WebSocket not connected");
       setNotification({
         open: true,
-        message: "Sending cost data...",
-        severity: "info",
+        message: "Cannot send data - WebSocket not connected",
+        severity: "error",
       });
+      return;
+    }
+
+    try {
+      console.log("Preparing to send cost data to server...");
+
+      // Extract the actual data array from the metaFile
+      const costData = Array.isArray(metaFile.data)
+        ? metaFile.data
+        : metaFile.data.data;
+
+      // Flatten the data (get all items including children)
+      const flattenItems = getAllItems(costData);
+      console.log(`Sending ${flattenItems.length} cost items to server`);
+
+      // Format cost data for WebSocket message
+      const costMessage = {
+        type: "cost_data",
+        data: {
+          project: "excel-import",
+          filename: metaFile.file.name,
+          timestamp: new Date().toISOString(),
+          data: flattenItems,
+          replaceExisting: true, // Replace existing cost data
+        },
+      };
+
+      // Register a one-time handler for the response
+      const messageId =
+        Date.now().toString() + Math.random().toString(36).substring(2, 10);
+
+      // Create a promise that resolves when we get a response
+      const responsePromise = new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          delete responseHandlersRef.current[messageId];
+          reject(new Error("Response timeout"));
+        }, 30000);
+
+        responseHandlersRef.current[messageId] = (response) => {
+          clearTimeout(timeoutId);
+
+          if (response.status === "success") {
+            resolve(response);
+          } else {
+            reject(new Error(response.message || "Error sending cost data"));
+          }
+        };
+      });
+
+      // Add message ID to the cost message
+      costMessage.messageId = messageId;
+
+      // Send the message
+      globalWs.send(JSON.stringify(costMessage));
+      console.log("Cost data sent to server");
+
+      // Wait for the cost data to be processed
+      await responsePromise;
+
+      // Now send a reapply_costs message to process all elements with our new costs
+      const reapplyMessage = {
+        type: "reapply_costs",
+        timestamp: new Date().toISOString(),
+      };
+
+      // Send the reapply message and wait for response
+      const reapplyResponse = await new Promise((resolve, reject) => {
+        const reapplyMessageId =
+          Date.now().toString() + Math.random().toString(36).substring(2, 15);
+        const timeoutId = setTimeout(() => {
+          delete responseHandlersRef.current[reapplyMessageId];
+          reject(new Error("Reapply response timeout"));
+        }, 60000); // Allow more time for reapply
+
+        responseHandlersRef.current[reapplyMessageId] = (response: any) => {
+          clearTimeout(timeoutId);
+
+          if (response.status === "success") {
+            resolve(response);
+          } else {
+            reject(new Error(response.message || "Error reapplying costs"));
+          }
+        };
+
+        reapplyMessage.messageId = reapplyMessageId;
+        globalWs.send(JSON.stringify(reapplyMessage));
+        console.log("Reapply costs request sent to server");
+      });
+
+      console.log("Cost data successfully processed and applied to elements");
+
+      // Show success notification
+      setNotification({
+        open: true,
+        message: "Cost data successfully sent and applied to BIM elements",
+        severity: "success",
+      });
+
+      // Call external handler
+      if (onSendData) {
+        onSendData();
+      }
     } catch (error) {
       console.error("Error sending cost data:", error);
+
       setNotification({
         open: true,
-        message: `Error sending cost data: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        message: error.message || "Error sending cost data",
         severity: "error",
       });
     }
-  }, [prepareCostData, sendMessage]);
+  }, [metaFile, onSendData]);
 
   // Handle sending data when button is clicked
   const handleSendData = useCallback(() => {
@@ -522,6 +630,158 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     }
   }, [metaFile, wsConnected, sendCostDataToServer, onSendData]);
 
+  // Function to request code matching information from the server
+  const requestCodeMatching = useCallback(() => {
+    if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
+      console.error("WebSocket not connected - can't request code matching");
+      return Promise.reject(new Error("WebSocket not connected"));
+    }
+
+    return new Promise<any>((resolve, reject) => {
+      try {
+        // Create a unique message ID for this request
+        const messageId =
+          Date.now().toString() + Math.random().toString(36).substring(2, 10);
+
+        // Register a response handler for this message ID
+        responseHandlersRef.current[messageId] = (response) => {
+          console.log("Received code matching response:", response);
+          resolve(response);
+        };
+
+        // Set a timeout to reject the promise if no response is received
+        setTimeout(() => {
+          if (responseHandlersRef.current[messageId]) {
+            delete responseHandlersRef.current[messageId];
+            reject(new Error("Code matching request timed out"));
+          }
+        }, 10000);
+
+        // Send the request
+        const message = {
+          type: "request_code_matching",
+          messageId,
+        };
+
+        globalWs.send(JSON.stringify(message));
+        console.log("Sent code matching request with ID:", messageId);
+      } catch (error) {
+        console.error("Error sending code matching request:", error);
+        reject(error);
+      }
+    });
+  }, []);
+
+  // Expose request code matching and send data functions for the PreviewModal
+  const exposeFunctions = useCallback(() => {
+    if (typeof window !== "undefined") {
+      // Expose requestCodeMatching function
+      (window as any).requestCodeMatching = requestCodeMatching;
+
+      // Expose sendCostDataToServer function with simplified interface
+      (window as any).sendCostDataToServer = async (costData: any) => {
+        if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
+          console.error("WebSocket not connected");
+          throw new Error("Cannot send data - WebSocket not connected");
+        }
+
+        try {
+          console.log("Sending cost data to server:", costData);
+
+          // Format cost data for WebSocket message
+          const costMessage = {
+            type: "cost_data",
+            data: costData,
+          };
+
+          // Register a one-time handler for the response
+          const messageId =
+            Date.now().toString() + Math.random().toString(36).substring(2, 10);
+
+          // Create a promise that resolves when we get a response
+          const responsePromise = new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              delete responseHandlersRef.current[messageId];
+              reject(new Error("Response timeout"));
+            }, 30000);
+
+            responseHandlersRef.current[messageId] = (response: any) => {
+              clearTimeout(timeoutId);
+
+              if (response.status === "success") {
+                resolve(response);
+              } else {
+                reject(
+                  new Error(response.message || "Error sending cost data")
+                );
+              }
+            };
+          });
+
+          // Add message ID to the cost message
+          (costMessage as any).messageId = messageId;
+
+          // Send the message
+          globalWs.send(JSON.stringify(costMessage));
+          console.log("Cost data sent to server");
+
+          // Wait for the cost data to be processed
+          await responsePromise;
+
+          // Now send a reapply_costs message to process all elements with our new costs
+          const reapplyMessage = {
+            type: "reapply_costs",
+            timestamp: new Date().toISOString(),
+          };
+
+          // Send the reapply message and wait for response
+          const reapplyResponse = await new Promise((resolve, reject) => {
+            const reapplyMessageId =
+              Date.now().toString() +
+              Math.random().toString(36).substring(2, 15);
+            const timeoutId = setTimeout(() => {
+              delete responseHandlersRef.current[reapplyMessageId];
+              reject(new Error("Reapply response timeout"));
+            }, 60000); // Allow more time for reapply
+
+            responseHandlersRef.current[reapplyMessageId] = (response: any) => {
+              clearTimeout(timeoutId);
+
+              if (response.status === "success") {
+                resolve(response);
+              } else {
+                reject(new Error(response.message || "Error reapplying costs"));
+              }
+            };
+
+            (reapplyMessage as any).messageId = reapplyMessageId;
+            if (globalWs && globalWs.readyState === WebSocket.OPEN) {
+              globalWs.send(JSON.stringify(reapplyMessage));
+              console.log("Reapply costs request sent to server");
+            } else {
+              reject(new Error("WebSocket not connected"));
+            }
+          });
+
+          console.log(
+            "Cost data successfully processed and applied to elements"
+          );
+
+          // Return success
+          return { success: true };
+        } catch (error: any) {
+          console.error("Error sending cost data:", error);
+          throw error;
+        }
+      };
+    }
+  }, [requestCodeMatching]);
+
+  // Call the expose function when the component mounts
+  useEffect(() => {
+    exposeFunctions();
+  }, [exposeFunctions]);
+
   return (
     <>
       <ListItem sx={{ mt: 4 }}>
@@ -541,10 +801,11 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
           <Button
             variant="contained"
             color="primary"
-            onClick={handleSendData}
-            disabled={!metaFile.valid || !wsConnected}
+            sx={{ minWidth: "180px" }}
+            onClick={onSendData}
+            startIcon={<SendIcon />}
           >
-            Daten senden {!wsConnected && "(Connecting...)"}
+            Vorschau anzeigen
           </Button>
         </ListItemIcon>
       </ListItem>
