@@ -54,7 +54,6 @@ interface KafkaProviderProps {
 // Provider component that will wrap the app
 export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
   const [ebkpAreaMap, setEbkpAreaMap] = useState<EbkpAreaMap>({});
-  const [socket, setSocket] = useState<WebSocket | null>(null);
 
   // Connect to WebSocket and listen for messages
   useEffect(() => {
@@ -120,8 +119,6 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
       console.log("WebSocket connection closed", event.code, event.reason);
     };
 
-    setSocket(ws);
-
     // Clean up on unmount
     return () => {
       if (
@@ -157,7 +154,7 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
         hour: "2-digit",
         minute: "2-digit",
       });
-    } catch (e) {
+    } catch (_) {
       return timestamp;
     }
   };
@@ -204,8 +201,8 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
       }
     }
 
-    // If no Kafka data or kennwert, return original CHF value
-    return item.chf;
+    // If no Kafka data or kennwert, return original CHF value or null if undefined
+    return item.chf ?? null;
   };
 
   // Calculate total cost based on Kafka area data when available

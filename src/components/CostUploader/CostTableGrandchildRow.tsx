@@ -142,16 +142,16 @@ const CostTableGrandchildRow = ({
       hover
       sx={{
         ...cellStyles.grandchildRow,
-        backgroundColor: isKafkaData(item.ebkp)
+        backgroundColor: isKafkaData(item.ebkp ?? "")
           ? "rgba(25, 118, 210, 0.02)"
           : undefined,
-        borderLeft: isKafkaData(item.ebkp)
+        borderLeft: isKafkaData(item.ebkp ?? "")
           ? "2px solid rgba(25, 118, 210, 0.3)"
           : "none",
       }}
     >
       <TableCell sx={{ padding: isMobile ? "8px 4px" : undefined }}>
-        {isKafkaData(item.ebkp) && (
+        {isKafkaData(item.ebkp ?? "") && (
           <Box
             sx={{
               width: 4,
@@ -200,11 +200,14 @@ const CostTableGrandchildRow = ({
             },
           }}
         >
-          {isKafkaData(item.ebkp) && (
+          {isKafkaData(item.ebkp ?? "") && (
             <Chip
               icon={<SyncIcon />}
               size="small"
-              label={renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+              label={renderNumber(
+                getMengeValue(item.ebkp ?? "", item.menge),
+                2
+              )}
               variant="outlined"
               color="info"
               sx={{
@@ -220,10 +223,12 @@ const CostTableGrandchildRow = ({
               }}
             />
           )}
-          {!isKafkaData(item.ebkp) &&
-            renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+          {!isKafkaData(item.ebkp ?? "") &&
+            renderNumber(getMengeValue(item.ebkp ?? "", item.menge), 2)}
 
-          {isKafkaData(item.ebkp) && <DataSourceInfo ebkpCode={item.ebkp} />}
+          {isKafkaData(item.ebkp ?? "") && (
+            <DataSourceInfo ebkpCode={item.ebkp ?? ""} />
+          )}
         </Box>
       </TableCell>
       <TableCell
@@ -232,7 +237,7 @@ const CostTableGrandchildRow = ({
           ...cellStyles.standardBorder,
         }}
       >
-        {isKafkaData(item.ebkp) ? "m²" : processField(item.einheit)}
+        {isKafkaData(item.ebkp ?? "") ? "m²" : processField(item.einheit)}
       </TableCell>
       <TableCell
         sx={{
@@ -254,7 +259,7 @@ const CostTableGrandchildRow = ({
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center" }}>
-          {isKafkaData(item.ebkp) ? (
+          {isKafkaData(item.ebkp ?? "") ? (
             <Chip
               size="small"
               label={renderNumber(getChfValue())}

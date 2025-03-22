@@ -41,12 +41,15 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
   const { getAreaData } = useKafka();
   const [wsConnected, setWsConnected] = useState(globalWsConnected);
   const responseHandlersRef = useRef<{
-    [key: string]: (response: any) => void;
+    [key: string]: (response: Record<string, unknown>) => void;
   }>({});
 
   // Function to send a message and register a response handler
   const sendMessage = useCallback(
-    (message: any, responseHandler?: (response: any) => void) => {
+    (
+      message: Record<string, unknown>,
+      responseHandler?: (response: Record<string, unknown>) => void
+    ) => {
       if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
         console.error("Cannot send message - WebSocket not connected");
         return false;

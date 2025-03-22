@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Box, CircularProgress, useMediaQuery, useTheme } from "@mui/material";
-import { CostUploaderProps, MetaFile } from "./types";
+import { CostUploaderProps, MetaFile, CostItem } from "./types";
 import FileDropzone from "./FileDropzone";
 import FileInfo from "./FileInfo";
 import HierarchicalTable from "./HierarchicalTable";
@@ -48,7 +48,12 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
 
       // Call the onFileUploaded prop if provided
       if (onFileUploaded) {
-        onFileUploaded(fileName, currentDate, status, metaFile.data, isUpdate);
+        // Extract data array based on format
+        const costData = Array.isArray(metaFile.data)
+          ? metaFile.data
+          : metaFile.data.data;
+
+        onFileUploaded(fileName, currentDate, status, costData, isUpdate);
       }
 
       setMetaFile(null);
@@ -64,7 +69,13 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
       const fileName = newMetaFile.file.name;
       const currentDate = new Date().toLocaleString("de-CH");
       const status = "Vorschau";
-      onFileUploaded(fileName, currentDate, status, newMetaFile.data);
+
+      // Extract data array based on format
+      const costData = Array.isArray(newMetaFile.data)
+        ? newMetaFile.data
+        : newMetaFile.data.data;
+
+      onFileUploaded(fileName, currentDate, status, costData);
     }
   };
 
