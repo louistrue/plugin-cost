@@ -38,7 +38,7 @@ const MainPage = () => {
   const Instructions = [
     {
       label: "Kostendaten hochladen",
-      description: `Laden Sie Ihre Kostendaten im Excel-Format hoch. Die Daten werden anschließend in einer hierarchischen Übersicht angezeigt.`,
+      description: `Laden Sie Ihre Kostendaten im Excel-Format hoch. Die Daten werden anschliessend in einer hierarchischen Übersicht angezeigt.`,
     },
     {
       label: "Daten überprüfen",
