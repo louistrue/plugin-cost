@@ -71,25 +71,39 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
           replaceExisting: true,
         };
 
-        await window.sendCostDataToServer(costData);
+        console.log("Sending cost data to server:", costData);
 
-        // Notify parent component
+        const result = await window.sendCostDataToServer(costData);
+        console.log("Server response:", result);
+
+        // Notify parent component of successful save
         if (onFileUploaded) {
           onFileUploaded(
             fileName,
             new Date().toLocaleString("de-CH"),
-            "Erfolgreich",
+            "Erfolgreich gespeichert",
             matches,
             true
           );
         }
 
+        // Clear the file after successful processing
         setMetaFile(null);
         setIsLoading(false);
       } catch (error) {
         console.error("Error sending cost data:", error);
         setIsLoading(false);
-        // Show error using the FileInfo component's notification system
+
+        // We still want to notify the parent of the upload, just mark it as failed
+        if (onFileUploaded && metaFile) {
+          onFileUploaded(
+            metaFile.file.name,
+            new Date().toLocaleString("de-CH"),
+            `Fehler: ${error.message || "Unbekannter Fehler"}`,
+            matches,
+            false
+          );
+        }
       }
     } else {
       // Fallback to simulated behavior if WebSocket function not available

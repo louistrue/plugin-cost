@@ -16,6 +16,12 @@ export interface CostItem {
   is_structural?: boolean;
   fire_rating?: string;
   category?: string;
+  // Fields for Kafka data tracking
+  fromKafka?: boolean;
+  kafkaTimestamp?: string;
+  kafkaSource?: string;
+  areaSource?: string;
+  area?: number;
   [key: string]: any;
 }
 

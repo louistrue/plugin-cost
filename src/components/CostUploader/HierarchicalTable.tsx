@@ -48,9 +48,6 @@ const HierarchicalTable = ({
   toggleRow,
   isMobile,
 }: HierarchicalTableProps) => {
-  // Get isKafkaData helper from context
-  const { isKafkaData } = useKafka();
-
   // Cell styles for alignment and formatting
   const cellStyles: CellStyles = createCellStyles(isMobile);
 
@@ -62,7 +59,7 @@ const HierarchicalTable = ({
 
     for (const item of items) {
       // Check if this item has BIM data
-      if (isKafkaData(item.ebkp)) {
+      if (item.fromKafka === true) {
         count++;
       }
 

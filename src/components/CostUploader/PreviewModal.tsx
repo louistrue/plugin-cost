@@ -24,13 +24,11 @@ import {
   AlertTitle,
   Tabs,
   Tab,
-  Divider,
 } from "@mui/material";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import WarningIcon from "@mui/icons-material/Warning";
-import ErrorIcon from "@mui/icons-material/Error";
 import InfoIcon from "@mui/icons-material/Info";
 import { MetaFile, CostItem } from "./types";
 import { useKafka } from "../../contexts/KafkaContext";
@@ -72,16 +70,33 @@ const normalizeEbkpCode = (code: string | undefined): string => {
   // Handle formats like C01 -> C1
   normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
 
+  // Handle special case "C.1" format (missing number after letter)
+  normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
+
   return normalized;
 };
 
-// Function to check if two EBKP codes match
+// Function to check if two codes match (including partial matches)
 const codesMatch = (
   code1: string | undefined,
   code2: string | undefined
 ): boolean => {
   if (!code1 || !code2) return false;
-  return normalizeEbkpCode(code1) === normalizeEbkpCode(code2);
+
+  const normalized1 = normalizeEbkpCode(code1);
+  const normalized2 = normalizeEbkpCode(code2);
+
+  // Direct match
+  if (normalized1 === normalized2) return true;
+
+  // Partial match (e.g., C2 matching C2.1)
+  if (normalized1.length >= 2 && normalized2.length >= 2) {
+    const prefix1 = normalized1.match(/^([A-Z]\d+)/)?.[1];
+    const prefix2 = normalized2.match(/^([A-Z]\d+)/)?.[1];
+    if (prefix1 && prefix2 && prefix1 === prefix2) return true;
+  }
+
+  return false;
 };
 
 const PreviewModal: React.FC<PreviewModalProps> = ({
@@ -352,7 +367,6 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   });
 
   // Calculate stats for the preview
-  const totalCostItems = allCostItems.filter((item) => item.ebkp).length;
   const totalElementsToUpdate = potentialMatches.reduce(
     (sum, match) => sum + match.elementCount,
     0
@@ -395,10 +409,17 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
 
   // Return the data when confirmed
   const handleConfirm = () => {
+    // Display loading state
+    setLoading(true);
+
     // Prepare the enhanced data to send to Kafka
     const enhancedData = potentialMatches.map((match) => {
       const costItem = match.excelItem || {};
+      const area = match.elementCount; // Use element count as area measurement
+      const costUnit = match.costUnit || 0; // Unit cost
+      const totalCost = area * costUnit; // Total cost calculated from area and unit cost
 
+      // Create a complete data object with all necessary fields
       return {
         id: match.code,
         category: costItem.bezeichnung || costItem.category || "",
@@ -409,15 +430,43 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
         ebkph1: match.code.match(/^([A-Z]\d+)/)?.[1] || "",
         ebkph2: match.code.match(/^[A-Z]\d+\.(\d+)/)?.[1] || "",
         ebkph3: "",
-        cost_unit: match.costUnit,
-        area: match.elementCount, // Use element count as area approximation
-        cost: match.costUnit * match.elementCount,
+        cost_unit: costUnit,
+        area: area,
+        cost: totalCost,
         element_count: match.elementCount,
         fileID: metaFile?.file.name || "unknown",
+        // Add flags for Kafka data integration and visualization
+        fromKafka: true,
+        kafkaSource: "BIM",
+        kafkaTimestamp: new Date().toISOString(),
+        areaSource: "BIM",
+        einheit: "m²", // Unit is always square meters for BIM data
+        // Include original Excel data for reference
+        menge: area, // Add menge explicitly for consistency
+        totalChf: totalCost, // Add totalChf for backend
+        kennwert: costUnit, // Add kennwert for backend
+        originalItem: {
+          ebkp: costItem.ebkp,
+          bezeichnung: costItem.bezeichnung,
+          kennwert: costItem.kennwert,
+          menge: costItem.menge,
+          einheit: costItem.einheit,
+        },
       };
     });
 
+    console.log(
+      `Sending ${enhancedData.length} enhanced items to be saved with cost data`,
+      enhancedData
+    );
+
+    // First close the modal to avoid blocking UI
+    onClose();
+
+    // Call onConfirm with the enhanced data
     onConfirm(enhancedData);
+
+    setLoading(false);
   };
 
   return (

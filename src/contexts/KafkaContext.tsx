@@ -5,42 +5,46 @@ import React, {
   useEffect,
   ReactNode,
 } from "react";
-import { CostItem } from "../components/CostUploader/types";
 
-// Enhanced area data type that includes timestamp
-interface EbkpAreaData {
-  value: number;
+// Project update type
+interface ProjectUpdate {
+  projectId: string;
+  projectName: string;
+  elementCount: number;
+  totalCost?: number;
   timestamp: string;
-  source?: string; // E.g., "IFC", "Revit", etc.
-}
-
-// Define the shape of our eBKP area map
-interface EbkpAreaMap {
-  [ebkpCode: string]: EbkpAreaData;
 }
 
 // Define the context shape
 interface KafkaContextProps {
-  ebkpAreaMap: EbkpAreaMap;
+  connectionStatus: string;
+  sendCostUpdate: (
+    projectId: string,
+    projectName: string,
+    totalCost: number,
+    elementsWithCost: number
+  ) => Promise<boolean>;
+  projectUpdates: Record<string, ProjectUpdate>;
   replaceEbkpPlaceholders: (text: string) => string;
-  calculateUpdatedChf: (item: CostItem) => number | null;
-  calculateUpdatedTotalCost: (items: CostItem[]) => number;
-  getAreaData: (ebkpCode: string) => EbkpAreaData | undefined;
-  isKafkaData: (ebkpCode: string) => boolean;
+  calculateUpdatedChf: (item: CostItem) => number;
+  getAreaData: (code: string) => {
+    value?: number;
+    count?: number;
+    timestamp?: string;
+    source?: string;
+  } | null;
   formatTimestamp: (timestamp: string) => string;
-  ebkpAreaSums: { [key: string]: number };
 }
 
 // Create the context with default values
 const KafkaContext = createContext<KafkaContextProps>({
-  ebkpAreaMap: {},
-  replaceEbkpPlaceholders: (text) => text,
-  calculateUpdatedChf: () => null,
-  calculateUpdatedTotalCost: () => 0,
-  getAreaData: () => undefined,
-  isKafkaData: () => false,
-  formatTimestamp: () => "",
-  ebkpAreaSums: {},
+  connectionStatus: "CONNECTING",
+  sendCostUpdate: () => Promise.resolve(false),
+  projectUpdates: {},
+  replaceEbkpPlaceholders: (text: string) => text,
+  calculateUpdatedChf: () => 0,
+  getAreaData: () => null,
+  formatTimestamp: (timestamp: string) => timestamp,
 });
 
 // Custom hook to use the Kafka context
@@ -53,223 +57,237 @@ interface KafkaProviderProps {
 
 // Provider component that will wrap the app
 export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
-  const [ebkpAreaMap, setEbkpAreaMap] = useState<EbkpAreaMap>({});
+  const [backendUrl, setBackendUrl] = useState<string>("");
+  const [projectUpdates, setProjectUpdates] = useState<
+    Record<string, ProjectUpdate>
+  >({});
+  const [connectionStatus, setConnectionStatus] =
+    useState<string>("CONNECTING");
 
   // Connect to WebSocket and listen for messages
   useEffect(() => {
+    // Check if WebSocket is supported
+    if (!("WebSocket" in window)) {
+      console.error("WebSockets are not supported in this browser");
+      setConnectionStatus("DISCONNECTED");
+      return;
+    }
+
     // URL for WebSocket connection
-    const WEBSOCKET_URL =
-      import.meta.env.VITE_WEBSOCKET_URL || "ws://localhost:8001";
+    let wsUrl = "ws://localhost:8001";
+    try {
+      if (import.meta.env && import.meta.env.VITE_WEBSOCKET_URL) {
+        wsUrl = import.meta.env.VITE_WEBSOCKET_URL;
+      }
+    } catch (error) {
+      console.warn("Error accessing environment variables:", error);
+    }
 
-    const ws = new WebSocket(WEBSOCKET_URL);
+    // Extract the HTTP URL from WebSocket URL for REST API calls
+    try {
+      const wsProtocol = wsUrl.startsWith("wss:") ? "https:" : "http:";
+      const httpUrl = wsUrl.replace(/^ws(s)?:\/\//, "");
+      const apiBaseUrl = `${wsProtocol}//${httpUrl}`;
+      setBackendUrl(apiBaseUrl);
+    } catch (error) {
+      console.error("Error setting backend URL:", error);
+      setBackendUrl("");
+    }
 
-    ws.onopen = () => {
-      console.log("WebSocket connection established for KafkaContext");
-    };
+    let ws: WebSocket | null = null;
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        // Skip connection status messages
-        if (data.type === "connection") return;
-
-        // Process message and update area data
-        if (data.ebkph && data.area !== undefined) {
-          // Extract the EBKP code from ebkph string
-          // Typically ebkph might contain a full hierarchical path like "B/B06/B06.01"
-          const rawEbkpCode = data.ebkph.split("/").pop() || data.ebkph;
-
-          // Normalize the eBKP code to handle format differences
-          const normalizedEbkpCode = normalizeEbkpCode(rawEbkpCode);
-
-          // Get the source from the filename or a default if not available
-          const source = data.filename
-            ? data.filename.includes("IFC") || data.filename.includes("ifc")
-              ? "IFC"
-              : data.filename.includes("Revit") || data.filename.includes("rvt")
-              ? "Revit"
-              : "BIM"
-            : "BIM";
-
-          setEbkpAreaMap((prev) => {
-            const currentData = prev[normalizedEbkpCode];
-            const currentValue = currentData?.value || 0;
-
-            return {
-              ...prev,
-              [normalizedEbkpCode]: {
-                value: currentValue + data.area,
-                timestamp: new Date().toISOString(),
-                source,
-              },
-            };
-          });
+    try {
+      // Set up connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (ws && ws.readyState !== WebSocket.OPEN) {
+          console.warn("WebSocket connection timeout in KafkaContext");
+          if (ws) ws.close();
+          setConnectionStatus("DISCONNECTED");
         }
-      } catch (err) {
-        console.error("Error parsing WebSocket message:", err);
-      }
-    };
+      }, 5000);
 
-    ws.onerror = (event) => {
-      console.error("WebSocket error:", event);
-    };
+      // Initialize WebSocket
+      ws = new WebSocket(wsUrl);
 
-    ws.onclose = (event) => {
-      console.log("WebSocket connection closed", event.code, event.reason);
-    };
+      ws.onopen = () => {
+        console.log("WebSocket connection established for KafkaContext");
+        setConnectionStatus("CONNECTED");
+      };
 
-    // Clean up on unmount
-    return () => {
-      if (
-        ws.readyState === WebSocket.OPEN ||
-        ws.readyState === WebSocket.CONNECTING
-      ) {
-        ws.close();
-      }
-    };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          // Skip connection status messages
+          if (data.type === "connection") {
+            // Update connection status if included in the message
+            if (data.kafka) {
+              setConnectionStatus(data.kafka);
+            }
+            return;
+          }
+
+          // Handle project update notifications
+          if (data.type === "project_update") {
+            console.log(
+              "KafkaContext: Received project update notification:",
+              data
+            );
+
+            // Store project update information
+            setProjectUpdates((prev) => ({
+              ...prev,
+              [data.projectName]: {
+                projectId: data.projectId,
+                projectName: data.projectName,
+                elementCount: data.totalElements,
+                totalCost: data.totalCost,
+                timestamp: data.timestamp,
+              },
+            }));
+
+            return;
+          }
+        } catch (err) {
+          console.error("Error parsing WebSocket message:", err);
+        }
+      };
+
+      ws.onerror = (event) => {
+        console.error("WebSocket error in KafkaContext:", event);
+        setConnectionStatus("DISCONNECTED");
+      };
+
+      ws.onclose = (event) => {
+        console.log(
+          `WebSocket connection closed in KafkaContext: code=${
+            event.code
+          }, reason=${event.reason || "No reason"}`
+        );
+        setConnectionStatus("DISCONNECTED");
+      };
+
+      // Clean up on unmount
+      return () => {
+        if (ws) {
+          ws.close();
+        }
+      };
+    } catch (error) {
+      console.error("Failed to initialize WebSocket in KafkaContext:", error);
+      setConnectionStatus("DISCONNECTED");
+      return () => {}; // Empty cleanup function
+    }
   }, []);
 
-  // Function to normalize eBKP codes, handling differences between Kafka and Excel formats
-  const normalizeEbkpCode = (code: string): string => {
-    if (!code) return code;
+  // Send cost update to Kafka via WebSocket server
+  const sendCostUpdate = async (
+    projectId: string,
+    projectName: string,
+    totalCost: number,
+    elementsWithCost: number
+  ): Promise<boolean> => {
+    if (!backendUrl) {
+      console.warn("Backend URL not available for API calls");
+      return false;
+    }
 
-    // Convert code to uppercase for case-insensitive comparison
-    const upperCode = code.toUpperCase();
+    try {
+      // Create notification payload similar to qto_producer.py
+      const notification = {
+        eventType: "COST_UPDATED",
+        timestamp: new Date().toISOString(),
+        producer: "plugin-cost",
+        payload: {
+          projectId: projectId,
+          projectName: projectName,
+          elementCount: elementsWithCost,
+          totalCost: totalCost,
+        },
+        metadata: {
+          version: "1.0",
+          correlationId: `cost-update-${Date.now()}`,
+        },
+      };
 
-    // Extract letter and number parts, removing leading zeros from numbers
-    // Example: "C02.01" becomes "C2.1"
-    return upperCode.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
+      // Send to WebSocket server
+      const response = await fetch(`${backendUrl}/send-cost-update`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(notification),
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          `Failed to send cost update: ${response.status} ${response.statusText}`
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error(
+        `Error sending cost update for project ${projectId}:`,
+        error
+      );
+      return false;
+    }
   };
 
-  // Format timestamp for display
+  // Function to replace eBKP placeholders in text
+  const replaceEbkpPlaceholders = (text: string): string => {
+    if (!text) return text;
+    return text.replace(/\{ebkp\}/g, "eBKP");
+  };
+
+  // Function to calculate updated CHF value
+  const calculateUpdatedChf = (item: CostItem): number => {
+    if (!item.menge || !item.kennwert) return 0;
+    return item.menge * item.kennwert;
+  };
+
+  // Function to get area data for a code
+  const getAreaData = (
+    code: string
+  ): {
+    value?: number;
+    count?: number;
+    timestamp?: string;
+    source?: string;
+  } | null => {
+    // Since we're not using Kafka for element data anymore, return null
+    return null;
+  };
+
+  // Function to format timestamp
   const formatTimestamp = (timestamp: string): string => {
-    if (!timestamp) return "";
     try {
       const date = new Date(timestamp);
-      return date.toLocaleString("de-CH", {
+      return date.toLocaleString("de-DE", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       });
-    } catch (_) {
+    } catch (error) {
       return timestamp;
     }
   };
 
-  // Function to replace {{eBKP:X}} placeholders with actual values
-  const replaceEbkpPlaceholders = (text: string): string => {
-    if (!text) return text;
-
-    // Use regex to find all {{eBKP:X}} placeholders
-    return text.replace(/\{\{eBKP:([^}]+)\}\}/g, (match, ebkpCode) => {
-      // Normalize the eBKP code from the placeholder
-      const normalizedCode = normalizeEbkpCode(ebkpCode);
-
-      const areaData = ebkpAreaMap[normalizedCode];
-      if (areaData?.value !== undefined) {
-        // Format the number with 2 decimal places
-        return areaData.value.toLocaleString("de-CH", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        });
-      }
-      // Keep the placeholder if no value found
-      return match;
-    });
-  };
-
-  // Calculate CHF value based on Kafka area data when available
-  const calculateUpdatedChf = (item: CostItem): number | null => {
-    if (!item) return null;
-
-    // If we have Kafka area data for this eBKP code
-    if (item.ebkp) {
-      // Normalize the eBKP code
-      const normalizedCode = normalizeEbkpCode(item.ebkp);
-
-      const areaData = ebkpAreaMap[normalizedCode];
-      if (areaData?.value !== undefined) {
-        const area = areaData.value;
-
-        // If we have kennwert, calculate CHF = area * kennwert
-        if (item.kennwert !== null && item.kennwert !== undefined) {
-          return area * item.kennwert;
-        }
-      }
-    }
-
-    // If no Kafka data or kennwert, return original CHF value or null if undefined
-    return item.chf ?? null;
-  };
-
-  // Calculate total cost based on Kafka area data when available
-  const calculateUpdatedTotalCost = (items: CostItem[]): number => {
-    if (!items || !items.length) return 0;
-
-    const calculateItemAndChildren = (costItem: CostItem): number => {
-      // Get updated CHF for this item based on Kafka area data
-      const updatedChf = calculateUpdatedChf(costItem) || 0;
-
-      // If the item has children, recursively calculate their CHF values too
-      const childrenChf =
-        costItem.children && costItem.children.length > 0
-          ? costItem.children.reduce(
-              (sum, child) => sum + calculateItemAndChildren(child),
-              0
-            )
-          : 0;
-
-      return updatedChf + childrenChf;
-    };
-
-    // Calculate total for all top-level items
-    return items.reduce((sum, item) => sum + calculateItemAndChildren(item), 0);
-  };
-
-  // Helper methods for components
-  const getAreaData = (ebkpCode: string): EbkpAreaData | undefined => {
-    if (!ebkpCode) return undefined;
-    const normalizedCode = normalizeEbkpCode(ebkpCode);
-    return ebkpAreaMap[normalizedCode];
-  };
-
-  const isKafkaData = (ebkpCode: string): boolean => {
-    if (!ebkpCode) return false;
-    const normalizedCode = normalizeEbkpCode(ebkpCode);
-    return ebkpAreaMap[normalizedCode] !== undefined;
-  };
-
-  // Create a utility function to get ebkpAreaSums for backwards compatibility
-  const getEbkpAreaSums = (): { [key: string]: number } => {
-    const result: { [key: string]: number } = {};
-
-    for (const [key, data] of Object.entries(ebkpAreaMap)) {
-      result[key] = data.value;
-    }
-
-    return result;
-  };
-
-  // For backwards compatibility
-  const ebkpAreaSums = getEbkpAreaSums();
-
-  // Provide the context value
-  const contextValue: KafkaContextProps = {
-    ebkpAreaMap,
-    replaceEbkpPlaceholders,
-    calculateUpdatedChf,
-    calculateUpdatedTotalCost,
-    getAreaData,
-    isKafkaData,
-    formatTimestamp,
-    ebkpAreaSums,
-  };
-
   return (
-    <KafkaContext.Provider value={contextValue}>
+    <KafkaContext.Provider
+      value={{
+        connectionStatus,
+        sendCostUpdate,
+        projectUpdates,
+        replaceEbkpPlaceholders,
+        calculateUpdatedChf,
+        getAreaData,
+        formatTimestamp,
+      }}
+    >
       {children}
     </KafkaContext.Provider>
   );

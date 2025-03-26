@@ -380,10 +380,19 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
             // Get eBKP code and cost information
             const ebkp = item.ebkp || "";
             const costUnit = item.kennwert || 0;
-            const cost = (item.menge || 0) * costUnit;
 
             // Get area data from Kafka if available
             const areaData = ebkp ? getAreaData(ebkp) : null;
+
+            // Use Kafka area data if available, otherwise use the value from Excel
+            const area = areaData?.value || item.menge || 0;
+
+            // Calculate cost using the area
+            const cost = area * costUnit;
+
+            console.log(
+              `Processing EBKP ${ebkp}: Area=${area}m², Unit cost=${costUnit}, Total cost=${cost}`
+            );
 
             return {
               id: item.id || `cost-${ebkp}`,
@@ -395,7 +404,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
               cost: cost,
               cost_unit: costUnit,
               // Include area from Kafka if available
-              area: areaData?.value || item.menge || 0,
+              area: area,
               // Include timestamp if available from Kafka
               timestamp: areaData?.timestamp || new Date().toISOString(),
             };
@@ -429,10 +438,19 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
             // Get eBKP code and cost information
             const ebkp = item.ebkp || "";
             const costUnit = item.kennwert || 0;
-            const cost = (item.menge || 0) * costUnit;
 
             // Get area data from Kafka if available
             const areaData = ebkp ? getAreaData(ebkp) : null;
+
+            // Use Kafka area data if available, otherwise use the value from Excel
+            const area = areaData?.value || item.menge || 0;
+
+            // Calculate cost using the area
+            const cost = area * costUnit;
+
+            console.log(
+              `Processing EBKP ${ebkp}: Area=${area}m², Unit cost=${costUnit}, Total cost=${cost}`
+            );
 
             return {
               id: item.id || `cost-${ebkp}`,
@@ -444,7 +462,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
               cost: cost,
               cost_unit: costUnit,
               // Include area from Kafka if available
-              area: areaData?.value || item.menge || 0,
+              area: area,
               // Include timestamp if available from Kafka
               timestamp: areaData?.timestamp || new Date().toISOString(),
             };
@@ -492,6 +510,29 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       const flattenItems = getAllItems(costData);
       console.log(`Sending ${flattenItems.length} cost items to server`);
 
+      // Enhance items with area data from Kafka when available
+      const enhancedItems = flattenItems.map((item) => {
+        if (item.ebkp) {
+          const areaData = getAreaData(item.ebkp);
+          if (areaData) {
+            console.log(
+              `Found area data for ${item.ebkp}: ${areaData.value}m²`
+            );
+            return {
+              ...item,
+              menge: areaData.value, // Update area with Kafka value
+              area: areaData.value, // Also add as area property
+              areaSource: "kafka",
+              fromKafka: true, // Flag that this item was updated from Kafka
+              kafkaTimestamp: areaData.timestamp,
+              kafkaSource: areaData.source || "BIM",
+              einheit: "m²", // Set unit to m² for Kafka data
+            };
+          }
+        }
+        return item;
+      });
+
       // Format cost data for WebSocket message
       const costMessage = {
         type: "cost_data",
@@ -499,7 +540,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
           project: "excel-import",
           filename: metaFile.file.name,
           timestamp: new Date().toISOString(),
-          data: flattenItems,
+          data: enhancedItems,
           replaceExisting: true, // Replace existing cost data
         },
       };
@@ -588,7 +629,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         severity: "error",
       });
     }
-  }, [metaFile, onSendData]);
+  }, [metaFile, onSendData, getAreaData]);
 
   // Handle sending data when button is clicked
   const handleSendData = useCallback(() => {
@@ -688,94 +729,120 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         try {
           console.log("Sending cost data to server:", costData);
 
+          // Enhance data with Kafka area values if they exist
+          if (costData.data && Array.isArray(costData.data)) {
+            costData.data = costData.data.map((item: any) => {
+              if (item.ebkph) {
+                const areaData = getAreaData(item.ebkph);
+                if (areaData) {
+                  console.log(
+                    `Found area data for ${item.ebkph}: ${areaData.value}m²`
+                  );
+                  return {
+                    ...item,
+                    area: areaData.value,
+                    menge: areaData.value, // Update menge property with the Kafka area value
+                    areaSource: "kafka",
+                    fromKafka: true, // Flag that this item was updated from Kafka
+                    kafkaTimestamp: areaData.timestamp,
+                    kafkaSource: areaData.source || "BIM",
+                    einheit: "m²", // Set unit to m² for Kafka data
+                  };
+                }
+              }
+              return item;
+            });
+          }
+
+          // Generate a unique ID for this message
+          const messageId = `cost_${Date.now()}_${Math.random()
+            .toString(36)
+            .substring(2, 10)}`;
+
           // Format cost data for WebSocket message
           const costMessage = {
             type: "cost_data",
+            messageId: messageId,
             data: costData,
           };
 
-          // Register a one-time handler for the response
-          const messageId =
-            Date.now().toString() + Math.random().toString(36).substring(2, 10);
-
-          // Create a promise that resolves when we get a response
+          // Create a promise that resolves when we get a response, with improved error handling
           const responsePromise = new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-              delete responseHandlersRef.current[messageId];
-              reject(new Error("Response timeout"));
-            }, 30000);
+            // Create handlers for message, close, and error events
+            const messageHandler = (event: MessageEvent) => {
+              try {
+                const response = JSON.parse(event.data);
+                // Check if this is the response for our message
+                if (
+                  response.type === "cost_data_response" &&
+                  response.messageId === messageId
+                ) {
+                  // Clean up event listeners
+                  globalWs.removeEventListener("message", messageHandler);
+                  globalWs.removeEventListener("close", closeHandler);
+                  globalWs.removeEventListener("error", errorHandler);
 
-            responseHandlersRef.current[messageId] = (response: any) => {
-              clearTimeout(timeoutId);
+                  // Clear timeout
+                  clearTimeout(timeoutId);
 
-              if (response.status === "success") {
-                resolve(response);
-              } else {
-                reject(
-                  new Error(response.message || "Error sending cost data")
-                );
+                  if (response.status === "success") {
+                    resolve(response);
+                  } else {
+                    reject(
+                      new Error(response.message || "Error sending cost data")
+                    );
+                  }
+                }
+              } catch (error) {
+                // Ignore parse errors from other messages
               }
             };
-          });
 
-          // Add message ID to the cost message
-          (costMessage as any).messageId = messageId;
+            const closeHandler = () => {
+              clearTimeout(timeoutId);
+              globalWs.removeEventListener("message", messageHandler);
+              globalWs.removeEventListener("error", errorHandler);
+              reject(new Error("WebSocket connection closed unexpectedly"));
+            };
+
+            const errorHandler = (error: Event) => {
+              clearTimeout(timeoutId);
+              globalWs.removeEventListener("message", messageHandler);
+              globalWs.removeEventListener("close", closeHandler);
+              reject(new Error(`WebSocket error: ${error.toString()}`));
+            };
+
+            // Set up event listeners
+            globalWs.addEventListener("message", messageHandler);
+            globalWs.addEventListener("close", closeHandler);
+            globalWs.addEventListener("error", errorHandler);
+
+            // Set a timeout - 30 seconds should be enough
+            const timeoutId = setTimeout(() => {
+              globalWs.removeEventListener("message", messageHandler);
+              globalWs.removeEventListener("close", closeHandler);
+              globalWs.removeEventListener("error", errorHandler);
+              reject(new Error("Response timeout after 30 seconds"));
+            }, 30000);
+          });
 
           // Send the message
           globalWs.send(JSON.stringify(costMessage));
-          console.log("Cost data sent to server");
+          console.log("Cost data sent to server with messageId:", messageId);
 
           // Wait for the cost data to be processed
-          await responsePromise;
+          const response = await responsePromise;
+          console.log("Received success response:", response);
 
-          // Now send a reapply_costs message to process all elements with our new costs
-          const reapplyMessage = {
-            type: "reapply_costs",
-            timestamp: new Date().toISOString(),
-          };
-
-          // Send the reapply message and wait for response
-          const reapplyResponse = await new Promise((resolve, reject) => {
-            const reapplyMessageId =
-              Date.now().toString() +
-              Math.random().toString(36).substring(2, 15);
-            const timeoutId = setTimeout(() => {
-              delete responseHandlersRef.current[reapplyMessageId];
-              reject(new Error("Reapply response timeout"));
-            }, 60000); // Allow more time for reapply
-
-            responseHandlersRef.current[reapplyMessageId] = (response: any) => {
-              clearTimeout(timeoutId);
-
-              if (response.status === "success") {
-                resolve(response);
-              } else {
-                reject(new Error(response.message || "Error reapplying costs"));
-              }
-            };
-
-            (reapplyMessage as any).messageId = reapplyMessageId;
-            if (globalWs && globalWs.readyState === WebSocket.OPEN) {
-              globalWs.send(JSON.stringify(reapplyMessage));
-              console.log("Reapply costs request sent to server");
-            } else {
-              reject(new Error("WebSocket not connected"));
-            }
-          });
-
-          console.log(
-            "Cost data successfully processed and applied to elements"
-          );
-
-          // Return success
-          return { success: true };
+          // Return success immediately instead of waiting for reapply_costs
+          return { success: true, message: "Cost data successfully sent" };
         } catch (error: any) {
           console.error("Error sending cost data:", error);
           throw error;
         }
       };
     }
-  }, [requestCodeMatching]);
+  }, [requestCodeMatching, getAreaData]);
 
   // Call the expose function when the component mounts
   useEffect(() => {

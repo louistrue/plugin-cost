@@ -61,9 +61,19 @@ const CostTableRow = ({
     // Convert code to uppercase for case-insensitive comparison
     const upperCode = code.toUpperCase();
 
-    // Extract letter and number parts, removing leading zeros from numbers
-    // Example: "C02.01" becomes "C2.1"
-    return upperCode.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
+    // Remove any spaces
+    let normalized = upperCode.replace(/\s+/g, "");
+
+    // Handle formats like C01.01 -> C1.1
+    normalized = normalized.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
+
+    // Handle formats like C01 -> C1
+    normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
+
+    // Handle special case "C.1" format (missing number after letter)
+    normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
+
+    return normalized;
   };
 
   // Get the Kafka context
@@ -75,10 +85,62 @@ const CostTableRow = ({
     formatTimestamp,
   } = useKafka();
 
+  // Get appropriate Menge value - use Kafka area data if available for this eBKP code
+  const getMengeValue = (
+    ebkpCode: string | undefined,
+    originalMenge: number | null | undefined
+  ) => {
+    // Check if item has a fromKafka flag (indicating it was updated with Kafka data)
+    if (item.fromKafka) {
+      return item.menge;
+    }
+
+    // If we have area data for this eBKP code (normalize it first)
+    if (ebkpCode) {
+      const normalizedCode = normalizeEbkpCode(ebkpCode);
+      const areaData = getAreaData(normalizedCode);
+
+      if (areaData?.value !== undefined) {
+        return areaData.value;
+      }
+    }
+    // Otherwise, use the original value from Excel
+    return originalMenge;
+  };
+
+  // Get CHF value - calculate based on Kafka area when available
+  const getChfValue = () => {
+    // If item has a fromKafka flag, calculate cost based on the item's menge
+    if (
+      item.fromKafka &&
+      item.menge !== undefined &&
+      item.kennwert !== undefined
+    ) {
+      return item.menge * item.kennwert;
+    }
+
+    // If we have area data from Kafka, use that for calculation
+    if (item.ebkp) {
+      const normalizedCode = normalizeEbkpCode(item.ebkp);
+      const areaData = getAreaData(normalizedCode);
+      if (areaData?.value !== undefined && item.kennwert !== undefined) {
+        return areaData.value * item.kennwert;
+      }
+    }
+
+    // Fallback to original calculation
+    return calculateUpdatedChf(item);
+  };
+
+  // Check if this item has Kafka data (either from flag or service)
+  const hasKafkaData = (item: CostItem): boolean => {
+    return item.fromKafka === true;
+  };
+
   // Check if this item or any of its children (recursively) have Kafka data
   const hasKafkaDataInTree = (item: CostItem): boolean => {
     // Check if this item has Kafka data
-    if (item.ebkp && isKafkaData(item.ebkp)) return true;
+    if (hasKafkaData(item)) return true;
 
     // Check children recursively
     if (item.children && item.children.length > 0) {
@@ -99,31 +161,17 @@ const CostTableRow = ({
     return replaceEbkpPlaceholders(String(text));
   };
 
-  // Get appropriate Menge value - use Kafka area data if available for this eBKP code
-  const getMengeValue = (
-    ebkpCode: string | undefined,
-    originalMenge: number | null | undefined
-  ) => {
-    // If we have area data for this eBKP code (normalize it first)
-    if (ebkpCode) {
-      const normalizedCode = normalizeEbkpCode(ebkpCode);
-      const areaData = getAreaData(normalizedCode);
-
-      if (areaData?.value !== undefined) {
-        return areaData.value;
-      }
-    }
-    // Otherwise, use the original value from Excel
-    return originalMenge;
-  };
-
-  // Get CHF value - calculate based on Kafka area when available
-  const getChfValue = () => {
-    return calculateUpdatedChf(item);
-  };
-
   // Get info about Kafka data for this eBKP code
   const getKafkaInfo = (ebkpCode: string) => {
+    // If the item has FromKafka flag, use its data
+    if (item.fromKafka) {
+      return {
+        value: item.menge,
+        timestamp: item.kafkaTimestamp || new Date().toISOString(),
+        source: item.kafkaSource || "BIM",
+      };
+    }
+
     if (!ebkpCode) return null;
 
     const normalizedCode = normalizeEbkpCode(ebkpCode);
@@ -181,29 +229,24 @@ const CostTableRow = ({
       <TableRow
         hover
         sx={{
-          backgroundColor:
-            item.ebkp && isKafkaData(item.ebkp)
-              ? "rgba(25, 118, 210, 0.04)"
-              : hasKafkaInTree
-              ? "rgba(25, 118, 210, 0.02)"
-              : "rgba(0, 0, 0, 0.04)",
+          backgroundColor: hasKafkaData(item)
+            ? "rgba(25, 118, 210, 0.04)"
+            : hasKafkaInTree
+            ? "rgba(25, 118, 210, 0.02)"
+            : "rgba(0, 0, 0, 0.04)",
           "& > *": { borderBottom: "unset" },
-          borderLeft:
-            item.ebkp && isKafkaData(item.ebkp)
-              ? "2px solid rgba(25, 118, 210, 0.6)"
-              : hasKafkaInTree
-              ? "2px solid rgba(25, 118, 210, 0.3)"
-              : "none",
+          borderLeft: hasKafkaData(item)
+            ? "2px solid rgba(25, 118, 210, 0.6)"
+            : hasKafkaInTree
+            ? "2px solid rgba(25, 118, 210, 0.3)"
+            : "none",
         }}
       >
         <TableCell sx={{ padding: isMobile ? "8px 4px" : undefined }}>
           {item.children && item.children.length > 0 && (
             <Tooltip
               title={
-                hasKafkaInTree &&
-                item.ebkp &&
-                !isKafkaData(item.ebkp) &&
-                !expanded
+                hasKafkaInTree && !hasKafkaData(item) && !expanded
                   ? "BIM Daten in untergeordneten Positionen"
                   : ""
               }
@@ -215,7 +258,7 @@ const CostTableRow = ({
                 size="small"
                 onClick={() => onToggle(item.ebkp || "")}
                 sx={
-                  hasKafkaInTree && item.ebkp && !isKafkaData(item.ebkp)
+                  hasKafkaInTree && !hasKafkaData(item)
                     ? {
                         color: !expanded ? "info.main" : undefined,
                         opacity: !expanded ? 0.9 : 0.7,
@@ -267,7 +310,7 @@ const CostTableRow = ({
               },
             }}
           >
-            {item.ebkp && isKafkaData(item.ebkp) && (
+            {hasKafkaData(item) && (
               <Chip
                 icon={<SyncIcon />}
                 size="small"
@@ -287,7 +330,7 @@ const CostTableRow = ({
                 }}
               />
             )}
-            {!(item.ebkp && isKafkaData(item.ebkp)) && hasKafkaInTree && (
+            {!hasKafkaData(item) && hasKafkaInTree && (
               <>
                 {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
                 <Tooltip
@@ -309,12 +352,12 @@ const CostTableRow = ({
                 </Tooltip>
               </>
             )}
-            {!(item.ebkp && isKafkaData(item.ebkp)) &&
+            {!hasKafkaData(item) &&
               !hasKafkaInTree &&
               renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
 
-            {item.ebkp && isKafkaData(item.ebkp) && (
-              <DataSourceInfo ebkpCode={item.ebkp} />
+            {hasKafkaData(item) && (
+              <DataSourceInfo ebkpCode={item.ebkp || ""} />
             )}
           </Box>
         </TableCell>
@@ -324,9 +367,7 @@ const CostTableRow = ({
             ...cellStyles.standardBorder,
           }}
         >
-          {item.ebkp && isKafkaData(item.ebkp)
-            ? "m²"
-            : processField(item.einheit)}
+          {hasKafkaData(item) ? "m²" : processField(item.einheit)}
         </TableCell>
         <TableCell
           sx={{
@@ -348,7 +389,7 @@ const CostTableRow = ({
           }}
         >
           <Box sx={{ display: "flex", alignItems: "center" }}>
-            {item.ebkp && isKafkaData(item.ebkp) ? (
+            {hasKafkaData(item) ? (
               <Chip
                 size="small"
                 label={renderNumber(getChfValue())}

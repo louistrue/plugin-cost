@@ -54,6 +54,11 @@ const CostTableGrandchildRow = ({
     formatTimestamp,
   } = useKafka();
 
+  // Check if this item has Kafka data (either from flag or service)
+  const hasKafkaData = (item: CostItem): boolean => {
+    return item.fromKafka === true || (item.ebkp && isKafkaData(item.ebkp));
+  };
+
   // Process text fields to replace any eBKP placeholders
   const processField = (text: string | null | undefined): string => {
     if (text === null || text === undefined) return "";
@@ -65,6 +70,11 @@ const CostTableGrandchildRow = ({
     ebkpCode: string,
     originalMenge: number | null | undefined
   ) => {
+    // Check if item has a fromKafka flag (indicating it was updated with Kafka data)
+    if (item.fromKafka) {
+      return item.menge;
+    }
+
     // If we have area data for this eBKP code (normalize it first)
     if (ebkpCode) {
       const normalizedCode = normalizeEbkpCode(ebkpCode);
@@ -80,11 +90,29 @@ const CostTableGrandchildRow = ({
 
   // Get CHF value - calculate based on Kafka area when available
   const getChfValue = () => {
+    // If item has a fromKafka flag, calculate cost based on the item's menge
+    if (
+      item.fromKafka &&
+      item.menge !== undefined &&
+      item.kennwert !== undefined
+    ) {
+      return item.menge * item.kennwert;
+    }
+
     return calculateUpdatedChf(item);
   };
 
   // Get info about Kafka data for this eBKP code
   const getKafkaInfo = (ebkpCode: string) => {
+    // If the item has FromKafka flag, use its data
+    if (item.fromKafka) {
+      return {
+        value: item.menge,
+        timestamp: item.kafkaTimestamp || new Date().toISOString(),
+        source: item.kafkaSource || "BIM",
+      };
+    }
+
     if (!ebkpCode) return null;
 
     const normalizedCode = normalizeEbkpCode(ebkpCode);
@@ -142,16 +170,16 @@ const CostTableGrandchildRow = ({
       hover
       sx={{
         ...cellStyles.grandchildRow,
-        backgroundColor: isKafkaData(item.ebkp ?? "")
+        backgroundColor: hasKafkaData(item)
           ? "rgba(25, 118, 210, 0.02)"
           : undefined,
-        borderLeft: isKafkaData(item.ebkp ?? "")
+        borderLeft: hasKafkaData(item)
           ? "2px solid rgba(25, 118, 210, 0.3)"
           : "none",
       }}
     >
       <TableCell sx={{ padding: isMobile ? "8px 4px" : undefined }}>
-        {isKafkaData(item.ebkp ?? "") && (
+        {hasKafkaData(item) && (
           <Box
             sx={{
               width: 4,
@@ -200,7 +228,7 @@ const CostTableGrandchildRow = ({
             },
           }}
         >
-          {isKafkaData(item.ebkp ?? "") && (
+          {hasKafkaData(item) && (
             <Chip
               icon={<SyncIcon />}
               size="small"
@@ -223,12 +251,10 @@ const CostTableGrandchildRow = ({
               }}
             />
           )}
-          {!isKafkaData(item.ebkp ?? "") &&
+          {!hasKafkaData(item) &&
             renderNumber(getMengeValue(item.ebkp ?? "", item.menge), 2)}
 
-          {isKafkaData(item.ebkp ?? "") && (
-            <DataSourceInfo ebkpCode={item.ebkp ?? ""} />
-          )}
+          {hasKafkaData(item) && <DataSourceInfo ebkpCode={item.ebkp ?? ""} />}
         </Box>
       </TableCell>
       <TableCell
@@ -237,7 +263,7 @@ const CostTableGrandchildRow = ({
           ...cellStyles.standardBorder,
         }}
       >
-        {isKafkaData(item.ebkp ?? "") ? "m²" : processField(item.einheit)}
+        {hasKafkaData(item) ? "m²" : processField(item.einheit)}
       </TableCell>
       <TableCell
         sx={{
@@ -259,7 +285,7 @@ const CostTableGrandchildRow = ({
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center" }}>
-          {isKafkaData(item.ebkp ?? "") ? (
+          {hasKafkaData(item) ? (
             <Chip
               size="small"
               label={renderNumber(getChfValue())}

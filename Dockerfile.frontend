@@ -6,8 +6,11 @@ WORKDIR /app
 # Copy package files for dependency installation
 COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm ci
+# Clean cache and install dependencies
+RUN npm cache clean --force && \
+    npm i --legacy-peer-deps && \
+    npm uninstall esbuild && \
+    npm install esbuild@0.19.12 --save-dev
 
 # Copy the rest of the application
 COPY . .

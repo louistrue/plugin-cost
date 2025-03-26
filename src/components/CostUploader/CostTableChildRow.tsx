@@ -70,14 +70,18 @@ const CostTableChildRow = ({
     replaceEbkpPlaceholders,
     calculateUpdatedChf,
     getAreaData,
-    isKafkaData,
     formatTimestamp,
   } = useKafka();
+
+  // Check if this item has Kafka data (either from flag or service)
+  const hasKafkaData = (item: CostItem): boolean => {
+    return item.fromKafka === true;
+  };
 
   // Check if this item or any of its children (recursively) have Kafka data
   const hasKafkaDataInTree = (item: CostItem): boolean => {
     // Check if this item has Kafka data
-    if (isKafkaData(item.ebkp)) return true;
+    if (hasKafkaData(item)) return true;
 
     // Check children recursively
     if (item.children && item.children.length > 0) {
@@ -103,6 +107,11 @@ const CostTableChildRow = ({
     ebkpCode: string,
     originalMenge: number | null | undefined
   ) => {
+    // Check if item has a fromKafka flag (indicating it was updated with Kafka data)
+    if (item.fromKafka) {
+      return item.menge;
+    }
+
     // If we have area data for this eBKP code (normalize it first)
     if (ebkpCode) {
       const normalizedCode = normalizeEbkpCode(ebkpCode);
@@ -118,11 +127,29 @@ const CostTableChildRow = ({
 
   // Get CHF value - calculate based on Kafka area when available
   const getChfValue = () => {
+    // If item has a fromKafka flag, calculate cost based on the item's menge
+    if (
+      item.fromKafka &&
+      item.menge !== undefined &&
+      item.kennwert !== undefined
+    ) {
+      return item.menge * item.kennwert;
+    }
+
     return calculateUpdatedChf(item);
   };
 
   // Get info about Kafka data for this eBKP code
   const getKafkaInfo = (ebkpCode: string) => {
+    // If the item has FromKafka flag, use its data
+    if (item.fromKafka) {
+      return {
+        value: item.menge,
+        timestamp: item.kafkaTimestamp || new Date().toISOString(),
+        source: item.kafkaSource || "BIM",
+      };
+    }
+
     if (!ebkpCode) return null;
 
     const normalizedCode = normalizeEbkpCode(ebkpCode);
@@ -181,12 +208,12 @@ const CostTableChildRow = ({
         hover
         sx={{
           ...cellStyles.childRow,
-          backgroundColor: isKafkaData(item.ebkp)
+          backgroundColor: hasKafkaData(item)
             ? "rgba(25, 118, 210, 0.03)"
             : hasKafkaInTree
             ? "rgba(25, 118, 210, 0.015)"
             : undefined,
-          borderLeft: isKafkaData(item.ebkp)
+          borderLeft: hasKafkaData(item)
             ? "2px solid rgba(25, 118, 210, 0.4)"
             : hasKafkaInTree
             ? "2px solid rgba(25, 118, 210, 0.2)"
@@ -209,7 +236,7 @@ const CostTableChildRow = ({
                 size="small"
                 onClick={() => onToggle(item.ebkp)}
                 sx={
-                  hasKafkaInTree && !isKafkaData(item.ebkp)
+                  hasKafkaInTree && !hasKafkaData(item)
                     ? {
                         color: !expanded ? "info.main" : undefined,
                         opacity: !expanded ? 0.8 : 0.6,
@@ -259,7 +286,7 @@ const CostTableChildRow = ({
               },
             }}
           >
-            {isKafkaData(item.ebkp) && (
+            {hasKafkaData(item) && (
               <Chip
                 icon={<SyncIcon />}
                 size="small"
@@ -279,7 +306,7 @@ const CostTableChildRow = ({
                 }}
               />
             )}
-            {!isKafkaData(item.ebkp) && hasKafkaInTree && (
+            {!hasKafkaData(item) && hasKafkaInTree && (
               <>
                 {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
                 <Tooltip
@@ -301,11 +328,11 @@ const CostTableChildRow = ({
                 </Tooltip>
               </>
             )}
-            {!isKafkaData(item.ebkp) &&
+            {!hasKafkaData(item) &&
               !hasKafkaInTree &&
               renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
 
-            {isKafkaData(item.ebkp) && <DataSourceInfo ebkpCode={item.ebkp} />}
+            {hasKafkaData(item) && <DataSourceInfo ebkpCode={item.ebkp} />}
           </Box>
         </TableCell>
         <TableCell
@@ -314,7 +341,7 @@ const CostTableChildRow = ({
             ...cellStyles.standardBorder,
           }}
         >
-          {isKafkaData(item.ebkp) ? "m²" : processField(item.einheit)}
+          {hasKafkaData(item) ? "m²" : processField(item.einheit)}
         </TableCell>
         <TableCell
           sx={{
@@ -336,7 +363,7 @@ const CostTableChildRow = ({
           }}
         >
           <Box sx={{ display: "flex", alignItems: "center" }}>
-            {isKafkaData(item.ebkp) ? (
+            {hasKafkaData(item) ? (
               <Chip
                 size="small"
                 label={renderNumber(getChfValue())}
