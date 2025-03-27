@@ -360,12 +360,12 @@ const MainPage = () => {
           const category = element.properties?.category || "Unknown";
           categoryCounts[category] = (categoryCounts[category] || 0) + 1;
 
-          // Count by eBKP code
+          // Count elements that have been mapped by eBKP
           const ebkpCode =
-            element.classification?.id ||
-            element.properties?.ebkph ||
-            "Unknown";
-          ebkpCounts[ebkpCode] = (ebkpCounts[ebkpCode] || 0) + 1;
+            element.classification?.id || element.properties?.ebkph;
+          if (ebkpCode && ebkpCode !== "Unknown") {
+            ebkpCounts[ebkpCode] = (ebkpCounts[ebkpCode] || 0) + 1;
+          }
         });
 
         setElementsByCategory(categoryCounts);
@@ -383,6 +383,34 @@ const MainPage = () => {
             },
           }));
         }
+
+        // Calculate project statistics
+        let elementsWithCost = 0;
+        let totalCost = 0;
+
+        elements.forEach((element) => {
+          // Count elements that have been mapped by eBKP
+          const ebkpCode =
+            element.classification?.id || element.properties?.ebkph;
+          if (ebkpCode && ebkpCode !== "Unknown") {
+            elementsWithCost++;
+          }
+          // Also track total cost if available
+          if (element.cost && element.cost > 0) {
+            totalCost += element.cost;
+          }
+        });
+
+        // Update project stats
+        setProjectStats({
+          totalElements: elements.length,
+          elementsWithCost: elementsWithCost,
+          totalCost: totalCost,
+          lastUpdated: new Date().toISOString(),
+        });
+
+        // Update total cost
+        setTotalCost(totalCost);
 
         // Finish loading
         setLoadingElements(false);
@@ -563,8 +591,14 @@ const MainPage = () => {
           let totalCost = 0;
 
           elements.forEach((element) => {
-            if (element.cost && element.cost > 0) {
+            // Count elements that have been mapped by eBKP
+            const ebkpCode =
+              element.classification?.id || element.properties?.ebkph;
+            if (ebkpCode && ebkpCode !== "Unknown") {
               elementsWithCost++;
+            }
+            // Also track total cost if available
+            if (element.cost && element.cost > 0) {
               totalCost += element.cost;
             }
           });
@@ -625,8 +659,14 @@ const MainPage = () => {
             let totalCost = 0;
 
             elements.forEach((element) => {
-              if (element.cost && element.cost > 0) {
+              // Count elements that have been mapped by eBKP
+              const ebkpCode =
+                element.classification?.id || element.properties?.ebkph;
+              if (ebkpCode && ebkpCode !== "Unknown") {
                 elementsWithCost++;
+              }
+              // Also track total cost if available
+              if (element.cost && element.cost > 0) {
                 totalCost += element.cost;
               }
             });
@@ -931,25 +971,6 @@ const MainPage = () => {
                     </Typography>
                   </div>
                 )}
-
-                <div className="flex justify-between items-center mt-1">
-                  <Typography variant="body2" color="text.secondary">
-                    Kafka:
-                  </Typography>
-                  <Chip
-                    size="small"
-                    color={
-                      connectionStatus === "CONNECTED" ? "success" : "error"
-                    }
-                    label={
-                      connectionStatus === "CONNECTED"
-                        ? "Verbunden"
-                        : "Getrennt"
-                    }
-                    variant="outlined"
-                    sx={{ height: 20, fontSize: "0.7rem" }}
-                  />
-                </div>
               </div>
             </Box>
 

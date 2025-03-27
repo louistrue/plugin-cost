@@ -3,14 +3,14 @@ import { ColumnWidthsType, ColumnHighlightsType } from "./types";
 // Define percentage-based column widths for better consistency
 export const columnWidths: ColumnWidthsType = {
   expandIcon: "3.5%",
-  ebkp: "8%",
-  bezeichnung: "26%",
-  menge: "8%",
-  einheit: "7.5%",
-  kennwert: "11%",
-  chf: "11%",
-  totalChf: "14%",
-  kommentar: "11%",
+  ebkp: "9%",
+  bezeichnung: "30%",
+  menge: "9%",
+  einheit: "8%",
+  kennwert: "12%",
+  chf: "0%",
+  totalChf: "16%",
+  kommentar: "12.5%",
 };
 
 // Define column highlight colors
@@ -46,6 +46,7 @@ export const createCellStyles = (
     paddingRight: "12px !important", // Normal right padding
   },
   chf: {
+    display: "none",
     backgroundColor: columnHighlights.chf,
     textAlign: "right",
     borderRight: "1px dashed #ccc",
@@ -55,6 +56,7 @@ export const createCellStyles = (
     backgroundColor: columnHighlights.totalChf,
     textAlign: "right",
     fontWeight: "bold",
+    borderLeft: "1px dashed #ccc",
     paddingRight: "12px !important", // Normal right padding
   },
   menge: {

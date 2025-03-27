@@ -33,30 +33,13 @@ const CostTableGrandchildRow = ({
   cellStyles,
   renderNumber,
 }: CostTableGrandchildRowProps) => {
-  // Function to normalize eBKP codes for matching with Kafka
-  const normalizeEbkpCode = (code: string): string => {
-    if (!code) return code;
-
-    // Convert code to uppercase for case-insensitive comparison
-    const upperCode = code.toUpperCase();
-
-    // Extract letter and number parts, removing leading zeros from numbers
-    // Example: "C02.01" becomes "C2.1"
-    return upperCode.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
-  };
-
   // Get the Kafka context
-  const {
-    replaceEbkpPlaceholders,
-    calculateUpdatedChf,
-    getAreaData,
-    isKafkaData,
-    formatTimestamp,
-  } = useKafka();
+  const { replaceEbkpPlaceholders, calculateUpdatedChf, formatTimestamp } =
+    useKafka();
 
-  // Check if this item has Kafka data (either from flag or service)
-  const hasKafkaData = (item: CostItem): boolean => {
-    return item.fromKafka === true || (item.ebkp && isKafkaData(item.ebkp));
+  // Check if this item has QTO data from MongoDB
+  const hasQtoData = (item: CostItem): boolean => {
+    return item.area !== undefined;
   };
 
   // Process text fields to replace any eBKP placeholders
@@ -65,82 +48,60 @@ const CostTableGrandchildRow = ({
     return replaceEbkpPlaceholders(String(text));
   };
 
-  // Get appropriate Menge value - use Kafka area data if available for this eBKP code
+  // Get appropriate Menge value - use area data if available for this eBKP code
   const getMengeValue = (
     ebkpCode: string,
     originalMenge: number | null | undefined
   ) => {
-    // Check if item has a fromKafka flag (indicating it was updated with Kafka data)
-    if (item.fromKafka) {
-      return item.menge;
+    // If item has area from MongoDB
+    if (item.area !== undefined) {
+      return item.area;
     }
 
-    // If we have area data for this eBKP code (normalize it first)
-    if (ebkpCode) {
-      const normalizedCode = normalizeEbkpCode(ebkpCode);
-      const areaData = getAreaData(normalizedCode);
-
-      if (areaData?.value !== undefined) {
-        return areaData.value;
-      }
-    }
-    // Otherwise, use the original value from Excel
+    // Otherwise use original value from Excel
     return originalMenge;
   };
 
-  // Get CHF value - calculate based on Kafka area when available
+  // Get CHF value - calculate based on area when available
   const getChfValue = () => {
-    // If item has a fromKafka flag, calculate cost based on the item's menge
-    if (
-      item.fromKafka &&
-      item.menge !== undefined &&
-      item.kennwert !== undefined
-    ) {
-      return item.menge * item.kennwert;
+    // If item has area from MongoDB
+    if (item.area !== undefined && item.kennwert !== undefined) {
+      return item.area * item.kennwert;
     }
 
     return calculateUpdatedChf(item);
   };
 
-  // Get info about Kafka data for this eBKP code
-  const getKafkaInfo = (ebkpCode: string) => {
-    // If the item has FromKafka flag, use its data
-    if (item.fromKafka) {
+  // Get info about QTO data for this item
+  const getQtoInfo = () => {
+    // If the item has area from MongoDB
+    if (item.area !== undefined) {
       return {
-        value: item.menge,
-        timestamp: item.kafkaTimestamp || new Date().toISOString(),
-        source: item.kafkaSource || "BIM",
+        value: item.area,
+        timestamp: item.timestamp || new Date().toISOString(),
+        source: item.areaSource || "BIM",
       };
     }
 
-    if (!ebkpCode) return null;
-
-    const normalizedCode = normalizeEbkpCode(ebkpCode);
-    const areaData = getAreaData(normalizedCode);
-
-    if (!areaData) return null;
-
-    return {
-      value: areaData.value,
-      timestamp: areaData.timestamp,
-      source: areaData.source || "BIM",
-    };
+    return null;
   };
 
-  // Create a component for Kafka source info icon with tooltip
-  const DataSourceInfo = ({ ebkpCode }: { ebkpCode: string }) => {
-    const kafkaInfo = getKafkaInfo(ebkpCode);
+  // Create a component for QTO source info icon with tooltip
+  const DataSourceInfo = () => {
+    const qtoInfo = getQtoInfo();
 
-    if (!kafkaInfo) return null;
+    if (!qtoInfo) return null;
 
-    const formattedTime = formatTimestamp(kafkaInfo.timestamp);
+    const formattedTime = qtoInfo.timestamp
+      ? formatTimestamp(qtoInfo.timestamp)
+      : "Kein Zeitstempel";
 
     return (
       <Tooltip
         title={
           <React.Fragment>
             <div>
-              <strong>Quelle:</strong> {kafkaInfo.source}
+              <strong>Quelle:</strong> {qtoInfo.source}
             </div>
             <div>
               <strong>Aktualisiert:</strong> {formattedTime}
@@ -156,7 +117,7 @@ const CostTableGrandchildRow = ({
             alignItems: "center",
             ml: 0.5,
             cursor: "help",
-            color: kafkaInfo.source === "IFC" ? "info.main" : "primary.main",
+            color: qtoInfo.source === "IFC" ? "info.main" : "primary.main",
           }}
         >
           <InfoOutlinedIcon fontSize="small" sx={{ fontSize: "0.875rem" }} />
@@ -170,16 +131,16 @@ const CostTableGrandchildRow = ({
       hover
       sx={{
         ...cellStyles.grandchildRow,
-        backgroundColor: hasKafkaData(item)
+        backgroundColor: hasQtoData(item)
           ? "rgba(25, 118, 210, 0.02)"
           : undefined,
-        borderLeft: hasKafkaData(item)
+        borderLeft: hasQtoData(item)
           ? "2px solid rgba(25, 118, 210, 0.3)"
           : "none",
       }}
     >
       <TableCell sx={{ padding: isMobile ? "8px 4px" : undefined }}>
-        {hasKafkaData(item) && (
+        {hasQtoData(item) && (
           <Box
             sx={{
               width: 4,
@@ -228,33 +189,36 @@ const CostTableGrandchildRow = ({
             },
           }}
         >
-          {hasKafkaData(item) && (
-            <Chip
-              icon={<SyncIcon />}
-              size="small"
-              label={renderNumber(
-                getMengeValue(item.ebkp ?? "", item.menge),
-                2
-              )}
-              variant="outlined"
-              color="info"
-              sx={{
-                height: 20,
-                "& .MuiChip-label": {
-                  px: 0.5,
-                  fontSize: "0.75rem",
-                },
-                "& .MuiChip-icon": {
-                  fontSize: "0.875rem",
-                  ml: 0.5,
-                },
-              }}
-            />
+          {hasQtoData(item) ? (
+            <Tooltip title="Direkte Mengenwerte aus BIM" arrow>
+              <Chip
+                icon={<SyncIcon />}
+                size="small"
+                label={renderNumber(
+                  getMengeValue(item.ebkp ?? "", item.menge),
+                  2
+                )}
+                variant="outlined"
+                color="info"
+                sx={{
+                  height: 20,
+                  backgroundColor: "rgba(25, 118, 210, 0.05)",
+                  "& .MuiChip-label": {
+                    px: 0.5,
+                    fontSize: "0.75rem",
+                  },
+                  "& .MuiChip-icon": {
+                    fontSize: "0.875rem",
+                    ml: 0.5,
+                  },
+                }}
+              />
+            </Tooltip>
+          ) : (
+            renderNumber(getMengeValue(item.ebkp ?? "", item.menge), 2)
           )}
-          {!hasKafkaData(item) &&
-            renderNumber(getMengeValue(item.ebkp ?? "", item.menge), 2)}
 
-          {hasKafkaData(item) && <DataSourceInfo ebkpCode={item.ebkp ?? ""} />}
+          {hasQtoData(item) && <DataSourceInfo />}
         </Box>
       </TableCell>
       <TableCell
@@ -263,7 +227,7 @@ const CostTableGrandchildRow = ({
           ...cellStyles.standardBorder,
         }}
       >
-        {hasKafkaData(item) ? "m²" : processField(item.einheit)}
+        {hasQtoData(item) ? "m²" : processField(item.einheit)}
       </TableCell>
       <TableCell
         sx={{
@@ -278,42 +242,33 @@ const CostTableGrandchildRow = ({
       </TableCell>
       <TableCell
         sx={{
-          ...getColumnStyle("chf"),
-          ...cellStyles.chf,
-          ...cellStyles.standardBorder,
-          position: "relative",
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center" }}>
-          {hasKafkaData(item) ? (
-            <Chip
-              size="small"
-              label={renderNumber(getChfValue())}
-              variant="outlined"
-              color="info"
-              sx={{
-                height: 20,
-                "& .MuiChip-label": {
-                  px: 0.5,
-                  fontSize: "0.75rem",
-                },
-              }}
-            />
-          ) : (
-            renderNumber(getChfValue())
-          )}
-        </Box>
-      </TableCell>
-      <TableCell
-        sx={{
           ...getColumnStyle("totalChf"),
           ...cellStyles.totalChf,
           ...cellStyles.standardBorder,
         }}
       >
-        {item.totalChf !== null && item.totalChf !== undefined
-          ? renderNumber(item.totalChf)
-          : ""}
+        <Box sx={{ display: "flex", alignItems: "center" }}>
+          {hasQtoData(item) ? (
+            <Tooltip title="Gesamtkosten dieser Position" arrow>
+              <Chip
+                size="small"
+                label={renderNumber(item.area * (item.kennwert || 0))}
+                variant="outlined"
+                color="info"
+                sx={{
+                  height: 20,
+                  backgroundColor: "rgba(25, 118, 210, 0.05)",
+                  "& .MuiChip-label": {
+                    px: 0.5,
+                    fontSize: "0.75rem",
+                  },
+                }}
+              />
+            </Tooltip>
+          ) : (
+            renderNumber(item.totalChf)
+          )}
+        </Box>
       </TableCell>
       <TableCell
         sx={{

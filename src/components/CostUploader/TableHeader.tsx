@@ -85,12 +85,12 @@ const TableHeader = ({ isMobile, cellStyles }: TableHeaderProps) => {
         </TableCell>
         <TableCell
           sx={{
-            ...getColumnStyle("chf"),
+            ...getColumnStyle("totalChf"),
             ...cellStyles.header,
-            ...cellStyles.chf,
+            ...cellStyles.totalChf,
           }}
         >
-          <span>CHF</span>
+          <span>Total CHF</span>
           {!isMobile && (
             <ArrowRightAltIcon
               fontSize="small"
@@ -106,15 +106,6 @@ const TableHeader = ({ isMobile, cellStyles }: TableHeaderProps) => {
           >
             (Berechnet)
           </span>
-        </TableCell>
-        <TableCell
-          sx={{
-            ...getColumnStyle("totalChf"),
-            ...cellStyles.header,
-            ...cellStyles.totalChf,
-          }}
-        >
-          Total CHF
         </TableCell>
         <TableCell
           sx={{

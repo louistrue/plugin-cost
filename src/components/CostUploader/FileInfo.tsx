@@ -57,6 +57,9 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     [key: string]: (response: Record<string, unknown>) => void;
   }>({});
 
+  // Add a ref to track if we've already loaded
+  const hasLoadedRef = useRef(false);
+
   // Function to send a message and register a response handler
   const sendMessage = useCallback(
     (
@@ -64,7 +67,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       responseHandler?: (response: Record<string, unknown>) => void
     ) => {
       if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
-        console.error("Cannot send message - WebSocket not connected");
         return false;
       }
 
@@ -85,7 +87,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         globalWs.send(JSON.stringify(message));
         return true;
       } catch (error) {
-        console.error("Error sending message:", error);
         return false;
       }
     },
@@ -106,19 +107,11 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         (globalWs.readyState === WebSocket.OPEN ||
           globalWs.readyState === WebSocket.CONNECTING)
       ) {
-        console.log(
-          "Global WebSocket already connected or connecting, using existing connection"
-        );
         setWsConnected(globalWsConnected);
         return;
       }
 
       const wsUrl = import.meta.env.VITE_WEBSOCKET_URL || "ws://localhost:8001";
-      console.log(
-        `Initializing global WebSocket at ${wsUrl} (attempt ${
-          reconnectAttempts + 1
-        })`
-      );
 
       // Create new WebSocket connection
       try {
@@ -126,18 +119,19 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         globalWs = ws;
 
         ws.onopen = () => {
-          console.log("Global WebSocket connection opened successfully");
           globalWsConnected = true;
           setWsConnected(true);
           reconnectAttempts = 0; // Reset reconnect counter on successful connection
+
+          // Only request code matching on initial connection if we haven't loaded yet
+          if (metaFile && metaFile.data && !hasLoadedRef.current) {
+            setTimeout(() => {
+              requestCodeMatching().catch(() => {});
+            }, 1000);
+          }
         };
 
         ws.onclose = (event) => {
-          console.log(
-            `Global WebSocket connection closed: code=${event.code}, reason=${
-              event.reason || "No reason"
-            }`
-          );
           globalWsConnected = false;
           setWsConnected(false);
           globalWs = null;
@@ -148,18 +142,12 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
               1000 * Math.pow(2, reconnectAttempts),
               10000
             );
-            console.log(
-              `Attempting to reconnect in ${delay}ms (attempt ${
-                reconnectAttempts + 1
-              }/${maxReconnectAttempts})`
-            );
 
             reconnectTimeout = setTimeout(() => {
               reconnectAttempts++;
               connectWebSocket();
             }, delay);
           } else if (reconnectAttempts >= maxReconnectAttempts) {
-            console.error("Maximum reconnection attempts reached. Giving up.");
             setNotification({
               open: true,
               message:
@@ -169,14 +157,11 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
           }
         };
 
-        ws.onerror = (event) => {
-          console.error("Global WebSocket error:", event);
-        };
+        ws.onerror = () => {};
 
         // Message handler for WebSocket
         ws.onmessage = (event) => {
           try {
-            console.log("Received WebSocket message:", event.data);
             const response = JSON.parse(event.data);
 
             // Check if this is a response to a message with an ID
@@ -193,14 +178,12 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
             if (response.type === "cost_data_response") {
               if (response.status === "success") {
-                console.log("Cost data sent successfully");
                 setNotification({
                   open: true,
                   message: "Cost data sent successfully",
                   severity: "success",
                 });
               } else {
-                console.error("Error sending cost data:", response.message);
                 setNotification({
                   open: true,
                   message: response.message || "Error sending cost data",
@@ -208,12 +191,9 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
                 });
               }
             }
-          } catch (error) {
-            console.error("Error parsing WebSocket response:", error);
-          }
+          } catch (error) {}
         };
       } catch (error) {
-        console.error("Error creating WebSocket:", error);
         globalWsConnected = false;
         setWsConnected(false);
 
@@ -228,7 +208,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
     // Increment client count and connect if this is the first client
     globalClientCount++;
-    console.log(`Component mounted. Client count: ${globalClientCount}`);
 
     if (globalClientCount === 1) {
       // Initial connection if this is the first client
@@ -238,16 +217,12 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       if (!pingInterval) {
         pingInterval = setInterval(() => {
           if (globalWs && globalWs.readyState === WebSocket.OPEN) {
-            console.log("Sending ping to keep WebSocket connection alive");
             try {
               globalWs.send(JSON.stringify({ type: "ping" }));
-            } catch (error) {
-              console.error("Error sending ping:", error);
-            }
+            } catch (error) {}
           } else if (!globalWs || globalWs.readyState === WebSocket.CLOSED) {
             // If the connection is closed, try to reconnect
             if (reconnectAttempts < maxReconnectAttempts) {
-              console.log("Connection lost, attempting to reconnect");
               connectWebSocket();
             }
           }
@@ -262,12 +237,9 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     return () => {
       // Decrement client count
       globalClientCount--;
-      console.log(`Component unmounted. Client count: ${globalClientCount}`);
 
       // If this is the last client, clean up shared resources
       if (globalClientCount === 0) {
-        console.log("Last client unmounted, cleaning up shared resources");
-
         // Clear intervals and timeouts
         if (pingInterval) {
           clearInterval(pingInterval);
@@ -284,7 +256,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
           (globalWs.readyState === WebSocket.OPEN ||
             globalWs.readyState === WebSocket.CONNECTING)
         ) {
-          console.log("Closing global WebSocket connection");
           globalWs.close(1000, "Last component unmounting");
           globalWs = null;
           globalWsConnected = false;
@@ -331,9 +302,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         "data-cost-codes",
         JSON.stringify(window.__ELEMENT_INFO.costCodes)
       );
-    } catch (e) {
-      console.error("Error storing cost codes in DOM", e);
-    }
+    } catch (e) {}
 
     // Cleanup
     return () => {
@@ -344,8 +313,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
   // Prepare cost data for sending to Kafka
   const prepareCostData = useCallback(() => {
-    console.log("Preparing cost data, metaFile:", metaFile);
-
     // More detailed validation
     if (!metaFile) {
       throw new Error("No metaFile available");
@@ -357,8 +324,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
     // Check if data is an array directly (from Excel)
     if (Array.isArray(metaFile.data)) {
-      console.log("Data is an array directly, using it as the source");
-
       if (metaFile.data.length === 0) {
         throw new Error("Data array is empty");
       }
@@ -390,10 +355,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
             // Calculate cost using the area
             const cost = area * costUnit;
 
-            console.log(
-              `Processing EBKP ${ebkp}: Area=${area}m², Unit cost=${costUnit}, Total cost=${cost}`
-            );
-
             return {
               id: item.id || `cost-${ebkp}`,
               category: item.bezeichnung || "",
@@ -415,8 +376,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     }
     // Check if data has a data property (nested structure)
     else if (metaFile.data.data && Array.isArray(metaFile.data.data)) {
-      console.log("Data has nested data array, using metaFile.data.data");
-
       if (metaFile.data.data.length === 0) {
         throw new Error("Data array is empty");
       }
@@ -448,10 +407,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
             // Calculate cost using the area
             const cost = area * costUnit;
 
-            console.log(
-              `Processing EBKP ${ebkp}: Area=${area}m², Unit cost=${costUnit}, Total cost=${cost}`
-            );
-
             return {
               id: item.id || `cost-${ebkp}`,
               category: item.bezeichnung || "",
@@ -471,10 +426,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
       return costData;
     } else {
-      console.error(
-        "MetaFile structure:",
-        JSON.stringify(metaFile, null, 2).substring(0, 500) + "..."
-      );
       throw new Error(
         "Invalid data structure: could not find a valid data array"
       );
@@ -484,12 +435,10 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
   // Send cost data to the server
   const sendCostDataToServer = useCallback(async () => {
     if (!metaFile || !metaFile.data) {
-      console.error("No file data to send");
       return;
     }
 
     if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
-      console.error("WebSocket not connected");
       setNotification({
         open: true,
         message: "Cannot send data - WebSocket not connected",
@@ -499,8 +448,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     }
 
     try {
-      console.log("Preparing to send cost data to server...");
-
       // Extract the actual data array from the metaFile
       const costData = Array.isArray(metaFile.data)
         ? metaFile.data
@@ -508,16 +455,12 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
       // Flatten the data (get all items including children)
       const flattenItems = getAllItems(costData);
-      console.log(`Sending ${flattenItems.length} cost items to server`);
 
       // Enhance items with area data from Kafka when available
       const enhancedItems = flattenItems.map((item) => {
         if (item.ebkp) {
           const areaData = getAreaData(item.ebkp);
           if (areaData) {
-            console.log(
-              `Found area data for ${item.ebkp}: ${areaData.value}m²`
-            );
             return {
               ...item,
               menge: areaData.value, // Update area with Kafka value
@@ -572,7 +515,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
       // Send the message
       globalWs.send(JSON.stringify(costMessage));
-      console.log("Cost data sent to server");
 
       // Wait for the cost data to be processed
       await responsePromise;
@@ -604,10 +546,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
         reapplyMessage.messageId = reapplyMessageId;
         globalWs.send(JSON.stringify(reapplyMessage));
-        console.log("Reapply costs request sent to server");
       });
-
-      console.log("Cost data successfully processed and applied to elements");
 
       // Show success notification
       setNotification({
@@ -621,8 +560,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
         onSendData();
       }
     } catch (error) {
-      console.error("Error sending cost data:", error);
-
       setNotification({
         open: true,
         message: error.message || "Error sending cost data",
@@ -630,6 +567,225 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       });
     }
   }, [metaFile, onSendData, getAreaData]);
+
+  // Helper function to dispatch mapping status events
+  const dispatchMappingStatus = (isMapping: boolean, message?: string) => {
+    const event = new CustomEvent("bim-mapping-status", {
+      detail: { isMapping, message },
+    });
+    window.dispatchEvent(event);
+  };
+
+  // Update the requestCodeMatching function to emit events for loading state
+  const requestCodeMatching = useCallback(() => {
+    if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("WebSocket not connected"));
+    }
+
+    // Dispatch event to signal mapping has started
+    dispatchMappingStatus(true, "BIM Elemente werden zugeordnet...");
+
+    return new Promise<any>((resolve, reject) => {
+      try {
+        // DEBUG: Extract eBKP codes from Excel data to help diagnose matching issues
+        let excelCodes: string[] = [];
+        if (metaFile && metaFile.data) {
+          const costData = Array.isArray(metaFile.data)
+            ? metaFile.data
+            : metaFile.data.data;
+          const allItems = getAllItems(costData);
+
+          // Extract and normalize all eBKP codes
+          excelCodes = allItems
+            .filter((item) => item.ebkp)
+            .map((item) => {
+              const code = String(item.ebkp).trim();
+              return code;
+            });
+
+          // Also show all eBKP codes after normalization to help with debugging
+          const normalizedCodes = excelCodes.map((code) => {
+            // Simple normalization helper function
+            const normalize = (c: string): string => {
+              if (!c) return c;
+
+              // Convert to uppercase and trim whitespace
+              const upperCode = c.toUpperCase().trim();
+
+              // Remove spaces
+              let normalized = upperCode.replace(/\s+/g, "");
+
+              // Handle leading zeros in patterns like C01.01 -> C1.1
+              normalized = normalized.replace(
+                /([A-Z])0*(\d+)\.0*(\d+)/g,
+                "$1$2.$3"
+              );
+
+              // Handle leading zeros in codes like C01 -> C1
+              normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
+
+              // Handle special case "C.1" format (missing number after letter)
+              normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
+
+              return normalized;
+            };
+
+            const normalized = normalize(code);
+            return normalized;
+          });
+        }
+
+        // Create a unique message ID for this request
+        const messageId =
+          Date.now().toString() + Math.random().toString(36).substring(2, 10);
+
+        // Register a response handler for this message ID
+        responseHandlersRef.current[messageId] = (response) => {
+          // Auto-add the matching codes to in-memory storage
+          if (response.matchingCodes && response.matchingCodes.length > 0) {
+            // Update the metaFile data with area values from matching codes
+            if (metaFile && metaFile.data) {
+              const costData = Array.isArray(metaFile.data)
+                ? metaFile.data
+                : metaFile.data.data;
+
+              // Process all items to find matches and add area values
+              const processItems = (items: CostItem[]) => {
+                items.forEach((item) => {
+                  if (item.ebkp) {
+                    // Check if this code matches any in the response
+                    const match = response.matchingCodes.find((mc) => {
+                      const normalizedItemCode = normalize(item.ebkp);
+                      return (
+                        normalizedItemCode === mc.code ||
+                        normalizedItemCode === mc.excelCode ||
+                        normalizedItemCode === mc.normalizedExcelCode
+                      );
+                    });
+
+                    if (match) {
+                      // Use quantity from MongoDB
+                      const quantity = match.quantity;
+
+                      // Update item with area data
+                      item.area = quantity || 0;
+                      item.areaSource = "mongodb";
+                      item.timestamp = response.timestamp;
+                      item.einheit = "m²"; // Set unit to m² for MongoDB data
+                    }
+                  }
+
+                  // Process children recursively
+                  if (item.children && item.children.length > 0) {
+                    processItems(item.children);
+                  }
+                });
+              };
+
+              // Simple normalization helper function
+              const normalize = (c: string): string => {
+                if (!c) return c;
+                const upperCode = c.toUpperCase().trim();
+                let normalized = upperCode.replace(/\s+/g, "");
+                normalized = normalized.replace(
+                  /([A-Z])0*(\d+)\.0*(\d+)/g,
+                  "$1$2.$3"
+                );
+                normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
+                normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
+                return normalized;
+              };
+
+              processItems(costData);
+
+              // Dispatch event to signal mapping is complete
+              setTimeout(() => {
+                dispatchMappingStatus(false);
+              }, 500); // Small delay to ensure UI updates
+            }
+          } else {
+            // No matches found, still need to signal completion
+            dispatchMappingStatus(false);
+          }
+
+          resolve(response);
+        };
+
+        // Set a timeout to reject the promise if no response is received
+        setTimeout(() => {
+          if (responseHandlersRef.current[messageId]) {
+            delete responseHandlersRef.current[messageId];
+            // Signal mapping has failed/completed
+            dispatchMappingStatus(false);
+            reject(new Error("Code matching request timed out"));
+          }
+        }, 10000);
+
+        // Add preprocessed Excel codes - both original and normalized
+        const normalizedExcelCodes = excelCodes.map((code) => {
+          // Simple normalization helper function
+          const normalize = (c: string): string => {
+            if (!c) return c;
+            const upperCode = c.toUpperCase().trim();
+            let normalized = upperCode.replace(/\s+/g, "");
+            normalized = normalized.replace(
+              /([A-Z])0*(\d+)\.0*(\d+)/g,
+              "$1$2.$3"
+            );
+            normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
+            normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
+            return normalized;
+          };
+
+          return {
+            original: code,
+            normalized: normalize(code),
+          };
+        });
+
+        // Send the request with debug data
+        const message = {
+          type: "request_code_matching",
+          messageId,
+          debug: {
+            excelCodes,
+            normalizedExcelCodes,
+            totalExcelCodes: excelCodes.length,
+            forceMongoDB: true, // Tell server to force MongoDB load
+          },
+          // Add the codes directly to the message for the server to process
+          codes: excelCodes,
+          normalizedCodes: normalizedExcelCodes.map((nc) => nc.normalized),
+        };
+
+        if (globalWs) {
+          globalWs.send(JSON.stringify(message));
+        }
+      } catch (error) {
+        // Signal mapping has failed/completed
+        dispatchMappingStatus(false);
+        reject(error);
+      }
+    });
+  }, [globalWs, metaFile]);
+
+  // Update the auto-loading effect
+  useEffect(() => {
+    // Don't run if there's no metaFile or WebSocket isn't connected
+    if (
+      !metaFile ||
+      !metaFile.data ||
+      !globalWs ||
+      globalWs.readyState !== WebSocket.OPEN ||
+      hasLoadedRef.current // Skip if we've already loaded
+    ) {
+      return;
+    }
+
+    // Mark as loaded and request code matching
+    hasLoadedRef.current = true;
+    requestCodeMatching().catch(() => {});
+  }, [metaFile, requestCodeMatching]);
 
   // Handle sending data when button is clicked
   const handleSendData = useCallback(() => {
@@ -660,7 +816,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       // Also call the original onSendData to maintain existing functionality
       onSendData();
     } catch (error) {
-      console.error("Error in handleSendData:", error);
       setNotification({
         open: true,
         message: `Error: ${
@@ -671,48 +826,6 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     }
   }, [metaFile, wsConnected, sendCostDataToServer, onSendData]);
 
-  // Function to request code matching information from the server
-  const requestCodeMatching = useCallback(() => {
-    if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
-      console.error("WebSocket not connected - can't request code matching");
-      return Promise.reject(new Error("WebSocket not connected"));
-    }
-
-    return new Promise<any>((resolve, reject) => {
-      try {
-        // Create a unique message ID for this request
-        const messageId =
-          Date.now().toString() + Math.random().toString(36).substring(2, 10);
-
-        // Register a response handler for this message ID
-        responseHandlersRef.current[messageId] = (response) => {
-          console.log("Received code matching response:", response);
-          resolve(response);
-        };
-
-        // Set a timeout to reject the promise if no response is received
-        setTimeout(() => {
-          if (responseHandlersRef.current[messageId]) {
-            delete responseHandlersRef.current[messageId];
-            reject(new Error("Code matching request timed out"));
-          }
-        }, 10000);
-
-        // Send the request
-        const message = {
-          type: "request_code_matching",
-          messageId,
-        };
-
-        globalWs.send(JSON.stringify(message));
-        console.log("Sent code matching request with ID:", messageId);
-      } catch (error) {
-        console.error("Error sending code matching request:", error);
-        reject(error);
-      }
-    });
-  }, []);
-
   // Expose request code matching and send data functions for the PreviewModal
   const exposeFunctions = useCallback(() => {
     if (typeof window !== "undefined") {
@@ -722,22 +835,16 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
       // Expose sendCostDataToServer function with simplified interface
       (window as any).sendCostDataToServer = async (costData: any) => {
         if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
-          console.error("WebSocket not connected");
           throw new Error("Cannot send data - WebSocket not connected");
         }
 
         try {
-          console.log("Sending cost data to server:", costData);
-
           // Enhance data with Kafka area values if they exist
           if (costData.data && Array.isArray(costData.data)) {
             costData.data = costData.data.map((item: any) => {
               if (item.ebkph) {
                 const areaData = getAreaData(item.ebkph);
                 if (areaData) {
-                  console.log(
-                    `Found area data for ${item.ebkph}: ${areaData.value}m²`
-                  );
                   return {
                     ...item,
                     area: areaData.value,

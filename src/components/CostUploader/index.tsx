@@ -1,5 +1,11 @@
-import { useState } from "react";
-import { Box, CircularProgress, useMediaQuery, useTheme } from "@mui/material";
+import { useState, useEffect } from "react";
+import {
+  Box,
+  CircularProgress,
+  useMediaQuery,
+  useTheme,
+  Typography,
+} from "@mui/material";
 import { CostUploaderProps, MetaFile, CostItem } from "./types";
 import FileDropzone from "./FileDropzone";
 import FileInfo from "./FileInfo";
@@ -11,6 +17,9 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [metaFile, setMetaFile] = useState<MetaFile | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [mappingMessage, setMappingMessage] = useState(
+    "BIM Daten werden verarbeitet..."
+  );
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [matchedElements, setMatchedElements] = useState<any[]>([]);
@@ -150,8 +159,70 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
     }
   };
 
+  // Add event listener for BIM mapping status
+  useEffect(() => {
+    const handleMappingStatus = (event: CustomEvent) => {
+      // Update both loading state and message
+      if (event.detail.isMapping) {
+        setIsLoading(true);
+        setMappingMessage(
+          event.detail.message || "BIM Daten werden verarbeitet..."
+        );
+      } else {
+        setIsLoading(false);
+      }
+    };
+
+    // Add event listener
+    window.addEventListener(
+      "bim-mapping-status" as any,
+      handleMappingStatus as EventListener
+    );
+
+    // Clean up
+    return () => {
+      window.removeEventListener(
+        "bim-mapping-status" as any,
+        handleMappingStatus as EventListener
+      );
+    };
+  }, []);
+
   return (
-    <div className="flex flex-col h-full">
+    <Box className="flex flex-col h-full" position="relative">
+      {/* Single Loading Indicator */}
+      {isLoading && (
+        <Box
+          position="fixed"
+          top={0}
+          left={0}
+          right={0}
+          bottom={0}
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          bgcolor="rgba(255, 255, 255, 0.8)"
+          zIndex={1300}
+        >
+          <Box
+            sx={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              backgroundColor: "white",
+              padding: 3,
+              borderRadius: 2,
+              boxShadow: 3,
+            }}
+          >
+            <CircularProgress sx={{ mb: 2 }} />
+            <Typography variant="body1" color="primary.main" fontWeight="500">
+              {mappingMessage}
+            </Typography>
+          </Box>
+        </Box>
+      )}
+
       {!metaFile ? (
         <FileDropzone
           onFileUploaded={handleFileUploaded}
@@ -159,37 +230,33 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
         />
       ) : (
         <div>
-          {isLoading ? (
-            <Box display="flex" justifyContent="center" my={4}>
-              <CircularProgress />
-            </Box>
-          ) : (
-            <div className="flex flex-col h-full">
-              <FileInfo
-                metaFile={metaFile}
-                onRemoveFile={handleRemoveFile}
-                onSendData={handleShowPreview} // Show preview instead of direct send
-              />
+          <div className="flex flex-col h-full">
+            <FileInfo
+              metaFile={metaFile}
+              onRemoveFile={handleRemoveFile}
+              onSendData={handleShowPreview}
+            />
 
-              <HierarchicalTable
-                metaFile={metaFile}
-                expandedRows={expandedRows}
-                toggleRow={toggleRow}
-                isMobile={isMobile}
-              />
+            <HierarchicalTable
+              metaFile={metaFile}
+              expandedRows={expandedRows}
+              toggleRow={toggleRow}
+              isMobile={isMobile}
+              isLoading={isLoading}
+              mappingMessage={mappingMessage}
+            />
 
-              {/* Preview Modal */}
-              <PreviewModal
-                open={previewOpen}
-                onClose={() => setPreviewOpen(false)}
-                onConfirm={handleConfirmPreview}
-                metaFile={metaFile}
-              />
-            </div>
-          )}
+            {/* Preview Modal */}
+            <PreviewModal
+              open={previewOpen}
+              onClose={() => setPreviewOpen(false)}
+              onConfirm={handleConfirmPreview}
+              metaFile={metaFile}
+            />
+          </div>
         </div>
       )}
-    </div>
+    </Box>
   );
 };
 

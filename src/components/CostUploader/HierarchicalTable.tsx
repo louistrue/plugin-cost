@@ -13,7 +13,6 @@ import { columnWidths } from "./styles";
 import { formatNumber } from "./utils";
 import TableHeader from "./TableHeader";
 import CostTableRow from "./CostTableRow";
-import { useKafka } from "../../contexts/KafkaContext";
 import SyncIcon from "@mui/icons-material/Sync";
 import {
   createTableContainerStyle,
@@ -40,6 +39,8 @@ interface HierarchicalTableProps {
   expandedRows: Record<string, boolean>;
   toggleRow: (code: string) => void;
   isMobile: boolean;
+  isLoading: boolean;
+  mappingMessage: string;
 }
 
 const HierarchicalTable = ({
@@ -47,9 +48,25 @@ const HierarchicalTable = ({
   expandedRows,
   toggleRow,
   isMobile,
+  isLoading,
+  mappingMessage,
 }: HierarchicalTableProps) => {
   // Cell styles for alignment and formatting
   const cellStyles: CellStyles = createCellStyles(isMobile);
+
+  // Helper function to get the data array safely
+  const getDataArray = (): CostItem[] => {
+    if (!metaFile.data) return [];
+
+    // Handle both formats: array and object with data property
+    if (Array.isArray(metaFile.data)) {
+      return metaFile.data;
+    } else if (metaFile.data.data && Array.isArray(metaFile.data.data)) {
+      return metaFile.data.data;
+    }
+
+    return [];
+  };
 
   // Count items with BIM/IFC data
   const countItemsWithBimData = (items: CostItem[]): number => {
@@ -73,9 +90,7 @@ const HierarchicalTable = ({
   };
 
   // Get count of items with BIM data
-  const bimItemsCount = metaFile?.data
-    ? countItemsWithBimData(metaFile.data)
-    : 0;
+  const bimItemsCount = countItemsWithBimData(getDataArray());
 
   // Render a number with hover effect showing the full value
   const renderNumber = (
@@ -90,6 +105,9 @@ const HierarchicalTable = ({
   };
 
   if (!metaFile?.data) return null;
+
+  // Get the data array for rendering
+  const dataArray = getDataArray();
 
   return (
     <>
@@ -130,7 +148,6 @@ const HierarchicalTable = ({
         elevation={1}
         sx={{
           ...createTableContainerStyle(isMobile),
-          // Force horizontal scrolling when content exceeds the container width
           overflowX: "auto",
         }}
       >
@@ -141,11 +158,9 @@ const HierarchicalTable = ({
             flexGrow: 1,
             ...tableStyle,
             "& td": {
-              // Direct table cell styling
               padding: isMobile ? "8px 0 8px 8px" : "16px 0 16px 8px",
             },
             "& th": {
-              // Direct header cell styling
               padding: isMobile ? "8px 0 8px 8px" : "16px 0 16px 8px",
             },
           }}
@@ -158,7 +173,6 @@ const HierarchicalTable = ({
             <col style={{ width: columnWidths.menge }} />
             <col style={{ width: columnWidths.einheit }} />
             <col style={{ width: columnWidths.kennwert }} />
-            <col style={{ width: columnWidths.chf }} />
             <col style={{ width: columnWidths.totalChf }} />
             <col style={{ width: columnWidths.kommentar }} />
           </colgroup>
@@ -166,11 +180,18 @@ const HierarchicalTable = ({
           <TableHeader isMobile={isMobile} cellStyles={cellStyles} />
 
           <TableBody>
-            {metaFile.data.map((parentItem: CostItem) => (
+            {dataArray.map((parentItem: CostItem) => (
               <CostTableRow
-                key={parentItem.ebkp}
+                key={
+                  parentItem.ebkp ||
+                  `row-${Math.random().toString(36).substring(2)}`
+                }
                 item={parentItem}
-                expanded={expandedRows[parentItem.ebkp] || false}
+                expanded={
+                  parentItem.ebkp
+                    ? expandedRows[parentItem.ebkp] || false
+                    : false
+                }
                 onToggle={toggleRow}
                 expandedRows={expandedRows}
                 isMobile={isMobile}

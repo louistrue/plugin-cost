@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   TableRow,
   TableCell,
@@ -53,48 +53,60 @@ const CostTableChildRow = ({
   cellStyles,
   renderNumber,
 }: Omit<CostTableChildRowProps, "expandedRows">) => {
-  // Function to normalize eBKP codes for matching with Kafka
-  const normalizeEbkpCode = (code: string): string => {
-    if (!code) return code;
-
-    // Convert code to uppercase for case-insensitive comparison
-    const upperCode = code.toUpperCase();
-
-    // Extract letter and number parts, removing leading zeros from numbers
-    // Example: "C02.01" becomes "C2.1"
-    return upperCode.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
-  };
+  // Add state to track if QTO data is available
+  const [hasQtoState, setHasQtoState] = useState<boolean>(false);
+  const [hasQtoInTreeState, setHasQtoInTreeState] = useState<boolean>(false);
 
   // Get the Kafka context
-  const {
-    replaceEbkpPlaceholders,
-    calculateUpdatedChf,
-    getAreaData,
-    formatTimestamp,
-  } = useKafka();
+  const { replaceEbkpPlaceholders, calculateUpdatedChf, formatTimestamp } =
+    useKafka();
 
-  // Check if this item has Kafka data (either from flag or service)
-  const hasKafkaData = (item: CostItem): boolean => {
-    return item.fromKafka === true;
+  // Update the hasQtoData function to check for IFC data
+  const hasQtoData = (item: CostItem): boolean => {
+    // Direct check for this item
+    if (item.area !== undefined) return true;
+
+    // Check if any children have QTO data
+    if (item.children && item.children.length > 0) {
+      return item.children.some((child) => child.area !== undefined);
+    }
+
+    return false;
   };
 
-  // Check if this item or any of its children (recursively) have Kafka data
-  const hasKafkaDataInTree = (item: CostItem): boolean => {
-    // Check if this item has Kafka data
-    if (hasKafkaData(item)) return true;
+  // Update the hasQtoDataInTree function to check for IFC data
+  const hasQtoDataInTree = (item: CostItem): boolean => {
+    // Check if this item has QTO data
+    if (hasQtoData(item)) return true;
 
     // Check children recursively
     if (item.children && item.children.length > 0) {
       for (const child of item.children) {
-        if (hasKafkaDataInTree(child)) return true;
+        if (child.area !== undefined) return true;
       }
     }
 
     return false;
   };
 
-  // Does this item or any of its children have Kafka data?
-  const hasKafkaInTree = hasKafkaDataInTree(item);
+  // Use effect to update QTO state whenever item or its children change
+  useEffect(() => {
+    // Check QTO data status
+    const qtoData = hasQtoData(item);
+    const qtoInTree = hasQtoDataInTree(item);
+
+    // Update state if changed
+    if (qtoData !== hasQtoState) {
+      setHasQtoState(qtoData);
+    }
+
+    if (qtoInTree !== hasQtoInTreeState) {
+      setHasQtoInTreeState(qtoInTree);
+    }
+  }, [item, hasQtoState, hasQtoInTreeState]);
+
+  // Use state values for rendering
+  const hasQtoInTree = hasQtoInTreeState;
 
   // Process text fields to replace any eBKP placeholders
   const processField = (text: string | null | undefined): string => {
@@ -102,82 +114,100 @@ const CostTableChildRow = ({
     return replaceEbkpPlaceholders(String(text));
   };
 
-  // Get appropriate Menge value - use Kafka area data if available for this eBKP code
+  // Update the calculateTotalsFromChildren function to handle grandchild sums
+  const calculateTotalsFromChildren = (item: CostItem) => {
+    if (!item.children || item.children.length === 0) {
+      return { area: 0, cost: 0, chf: 0 };
+    }
+
+    return item.children.reduce(
+      (acc, child) => {
+        // If child has direct area from MongoDB, add it
+        if (child.area !== undefined) {
+          acc.area += child.area;
+          acc.cost += child.area * (child.kennwert || 0);
+          acc.chf += child.area * (child.kennwert || 0);
+        }
+        // If child has its own children (grandchildren), add their totals
+        if (child.children && child.children.length > 0) {
+          const childTotals = calculateTotalsFromChildren(child);
+          acc.area += childTotals.area;
+          acc.cost += childTotals.cost;
+          acc.chf += childTotals.chf;
+        }
+        // If child has no IFC data but has a menge, add it
+        if (child.area === undefined && child.menge !== undefined) {
+          acc.area += child.menge;
+          acc.cost += child.menge * (child.kennwert || 0);
+          acc.chf += child.menge * (child.kennwert || 0);
+        }
+        return acc;
+      },
+      { area: 0, cost: 0, chf: 0 }
+    );
+  };
+
+  // Update the getMengeValue function to use grandchild sums
   const getMengeValue = (
     ebkpCode: string,
     originalMenge: number | null | undefined
   ) => {
-    // Check if item has a fromKafka flag (indicating it was updated with Kafka data)
-    if (item.fromKafka) {
-      return item.menge;
+    // Calculate total area from grandchildren
+    const { area } = calculateTotalsFromChildren(item);
+
+    // If we have a total area from grandchildren, use it
+    if (area > 0) {
+      return area;
     }
 
-    // If we have area data for this eBKP code (normalize it first)
-    if (ebkpCode) {
-      const normalizedCode = normalizeEbkpCode(ebkpCode);
-      const areaData = getAreaData(normalizedCode);
-
-      if (areaData?.value !== undefined) {
-        return areaData.value;
-      }
-    }
-    // Otherwise, use the original value from Excel
+    // Otherwise use original value from Excel
     return originalMenge;
   };
 
-  // Get CHF value - calculate based on Kafka area when available
+  // Update the getChfValue function to use grandchild sums
   const getChfValue = () => {
-    // If item has a fromKafka flag, calculate cost based on the item's menge
-    if (
-      item.fromKafka &&
-      item.menge !== undefined &&
-      item.kennwert !== undefined
-    ) {
-      return item.menge * item.kennwert;
+    // Calculate total cost from grandchildren
+    const { chf } = calculateTotalsFromChildren(item);
+
+    // If we have a total cost from grandchildren, use it
+    if (chf > 0) {
+      return chf;
     }
 
+    // Fallback to original calculation
     return calculateUpdatedChf(item);
   };
 
-  // Get info about Kafka data for this eBKP code
-  const getKafkaInfo = (ebkpCode: string) => {
-    // If the item has FromKafka flag, use its data
-    if (item.fromKafka) {
+  // Get info about QTO data for this item
+  const getQtoInfo = () => {
+    // If the item has area from MongoDB
+    if (item.area !== undefined) {
       return {
-        value: item.menge,
-        timestamp: item.kafkaTimestamp || new Date().toISOString(),
-        source: item.kafkaSource || "BIM",
+        value: item.area,
+        timestamp: item.timestamp || new Date().toISOString(),
+        source: item.areaSource || "BIM",
       };
     }
 
-    if (!ebkpCode) return null;
-
-    const normalizedCode = normalizeEbkpCode(ebkpCode);
-    const areaData = getAreaData(normalizedCode);
-
-    if (!areaData) return null;
-
-    return {
-      value: areaData.value,
-      timestamp: areaData.timestamp,
-      source: areaData.source || "BIM",
-    };
+    return null;
   };
 
-  // Create a component for Kafka source info icon with tooltip
-  const DataSourceInfo = ({ ebkpCode }: { ebkpCode: string }) => {
-    const kafkaInfo = getKafkaInfo(ebkpCode);
+  // Create a component for QTO source info icon with tooltip
+  const DataSourceInfo = () => {
+    const qtoInfo = getQtoInfo();
 
-    if (!kafkaInfo) return null;
+    if (!qtoInfo) return null;
 
-    const formattedTime = formatTimestamp(kafkaInfo.timestamp);
+    const formattedTime = qtoInfo.timestamp
+      ? formatTimestamp(qtoInfo.timestamp)
+      : "Kein Zeitstempel";
 
     return (
       <Tooltip
         title={
           <React.Fragment>
             <div>
-              <strong>Quelle:</strong> {kafkaInfo.source}
+              <strong>Quelle:</strong> {qtoInfo.source}
             </div>
             <div>
               <strong>Aktualisiert:</strong> {formattedTime}
@@ -193,7 +223,7 @@ const CostTableChildRow = ({
             alignItems: "center",
             ml: 0.5,
             cursor: "help",
-            color: kafkaInfo.source === "IFC" ? "info.main" : "primary.main",
+            color: qtoInfo.source === "IFC" ? "info.main" : "primary.main",
           }}
         >
           <InfoOutlinedIcon fontSize="small" sx={{ fontSize: "0.875rem" }} />
@@ -208,14 +238,14 @@ const CostTableChildRow = ({
         hover
         sx={{
           ...cellStyles.childRow,
-          backgroundColor: hasKafkaData(item)
+          backgroundColor: hasQtoData(item)
             ? "rgba(25, 118, 210, 0.03)"
-            : hasKafkaInTree
+            : hasQtoInTree
             ? "rgba(25, 118, 210, 0.015)"
             : undefined,
-          borderLeft: hasKafkaData(item)
+          borderLeft: hasQtoData(item)
             ? "2px solid rgba(25, 118, 210, 0.4)"
-            : hasKafkaInTree
+            : hasQtoInTree
             ? "2px solid rgba(25, 118, 210, 0.2)"
             : "none",
         }}
@@ -224,7 +254,7 @@ const CostTableChildRow = ({
           {item.children && item.children.length > 0 && (
             <Tooltip
               title={
-                hasKafkaInTree && !expanded
+                hasQtoInTree && !expanded
                   ? "BIM Daten in untergeordneten Positionen"
                   : ""
               }
@@ -236,7 +266,7 @@ const CostTableChildRow = ({
                 size="small"
                 onClick={() => onToggle(item.ebkp)}
                 sx={
-                  hasKafkaInTree && !hasKafkaData(item)
+                  hasQtoInTree && !hasQtoData(item)
                     ? {
                         color: !expanded ? "info.main" : undefined,
                         opacity: !expanded ? 0.8 : 0.6,
@@ -286,53 +316,35 @@ const CostTableChildRow = ({
               },
             }}
           >
-            {hasKafkaData(item) && (
-              <Chip
-                icon={<SyncIcon />}
-                size="small"
-                label={renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
-                variant="outlined"
-                color="info"
-                sx={{
-                  height: 20,
-                  "& .MuiChip-label": {
-                    px: 0.5,
-                    fontSize: "0.75rem",
-                  },
-                  "& .MuiChip-icon": {
-                    fontSize: "0.875rem",
-                    ml: 0.5,
-                  },
-                }}
-              />
+            {hasQtoData(item) || hasQtoInTree ? (
+              <Tooltip title="Summe der untergeordneten Positionen" arrow>
+                <Chip
+                  size="small"
+                  label={
+                    <Box sx={{ display: "flex", alignItems: "center" }}>
+                      <span>Σ </span>
+                      {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+                    </Box>
+                  }
+                  variant="outlined"
+                  color="primary"
+                  sx={{
+                    height: 20,
+                    backgroundColor: "rgba(25, 118, 210, 0.08)",
+                    borderColor: "rgba(25, 118, 210, 0.3)",
+                    "& .MuiChip-label": {
+                      px: 0.5,
+                      fontSize: "0.75rem",
+                      color: "primary.main",
+                    },
+                  }}
+                />
+              </Tooltip>
+            ) : (
+              renderNumber(getMengeValue(item.ebkp, item.menge), 2)
             )}
-            {!hasKafkaData(item) && hasKafkaInTree && (
-              <>
-                {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
-                <Tooltip
-                  title="Enthält BIM Daten in untergeordneten Positionen"
-                  arrow
-                >
-                  <Box
-                    sx={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: "50%",
-                      bgcolor: "info.main",
-                      display: "inline-block",
-                      ml: 0.8,
-                      verticalAlign: "middle",
-                      opacity: 0.5,
-                    }}
-                  />
-                </Tooltip>
-              </>
-            )}
-            {!hasKafkaData(item) &&
-              !hasKafkaInTree &&
-              renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
 
-            {hasKafkaData(item) && <DataSourceInfo ebkpCode={item.ebkp} />}
+            {hasQtoData(item) && <DataSourceInfo />}
           </Box>
         </TableCell>
         <TableCell
@@ -341,7 +353,7 @@ const CostTableChildRow = ({
             ...cellStyles.standardBorder,
           }}
         >
-          {hasKafkaData(item) ? "m²" : processField(item.einheit)}
+          {hasQtoData(item) ? "m²" : processField(item.einheit)}
         </TableCell>
         <TableCell
           sx={{
@@ -356,42 +368,44 @@ const CostTableChildRow = ({
         </TableCell>
         <TableCell
           sx={{
-            ...getColumnStyle("chf"),
-            ...cellStyles.chf,
-            ...cellStyles.standardBorder,
-            position: "relative",
-          }}
-        >
-          <Box sx={{ display: "flex", alignItems: "center" }}>
-            {hasKafkaData(item) ? (
-              <Chip
-                size="small"
-                label={renderNumber(getChfValue())}
-                variant="outlined"
-                color="info"
-                sx={{
-                  height: 20,
-                  "& .MuiChip-label": {
-                    px: 0.5,
-                    fontSize: "0.75rem",
-                  },
-                }}
-              />
-            ) : (
-              renderNumber(getChfValue())
-            )}
-          </Box>
-        </TableCell>
-        <TableCell
-          sx={{
             ...getColumnStyle("totalChf"),
             ...cellStyles.totalChf,
             ...cellStyles.standardBorder,
           }}
         >
-          {item.totalChf !== null && item.totalChf !== undefined
-            ? renderNumber(item.totalChf)
-            : ""}
+          <Box sx={{ display: "flex", alignItems: "center" }}>
+            {hasQtoData(item) || hasQtoInTree ? (
+              <Tooltip
+                title="Gesamtsumme inkl. untergeordnete Positionen"
+                arrow
+              >
+                <Chip
+                  size="small"
+                  label={
+                    <Box sx={{ display: "flex", alignItems: "center" }}>
+                      <span>Σ </span>
+                      {renderNumber(getChfValue())}
+                    </Box>
+                  }
+                  variant="outlined"
+                  color="primary"
+                  sx={{
+                    height: 20,
+                    backgroundColor: "rgba(25, 118, 210, 0.08)",
+                    borderColor: "rgba(25, 118, 210, 0.3)",
+                    "& .MuiChip-label": {
+                      px: 0.5,
+                      fontSize: "0.75rem",
+                      color: "primary.main",
+                      fontWeight: 500,
+                    },
+                  }}
+                />
+              </Tooltip>
+            ) : (
+              renderNumber(item.totalChf)
+            )}
+          </Box>
         </TableCell>
         <TableCell
           sx={{
@@ -441,7 +455,6 @@ const CostTableChildRow = ({
                     <col style={{ width: columnWidths["menge"] }} />
                     <col style={{ width: columnWidths["einheit"] }} />
                     <col style={{ width: columnWidths["kennwert"] }} />
-                    <col style={{ width: columnWidths["chf"] }} />
                     <col style={{ width: columnWidths["totalChf"] }} />
                     <col style={{ width: columnWidths["kommentar"] }} />
                   </colgroup>

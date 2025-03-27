@@ -61,6 +61,11 @@ const processedElementIds = new Set();
 // Storage for elements by project
 const elementsByProject = {};
 
+// Add at the top with other global variables
+let cachedMatches = null;
+let lastMatchTimestamp = null;
+const MATCH_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+
 console.log("Starting WebSocket server with configuration:", {
   kafkaBroker: config.kafka.broker,
   kafkaTopic: config.kafka.topic,
@@ -554,497 +559,125 @@ process.on("SIGINT", () => {
 });
 
 // Handle WebSocket connections
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   const clientId = nextClientId++;
-  const ip = req.socket.remoteAddress;
-  console.log(`New client connected: ID=${clientId}, IP=${ip}`);
-
-  // Store client with ID
+  ws.clientId = clientId;
+  ws.lastPing = Date.now();
   clients.set(clientId, ws);
 
-  // Attach client ID for tracking
-  ws.clientId = clientId;
-
-  // Setup heartbeat mechanism
-  setupHeartbeat(ws, clientId);
-
-  // Send connection status
-  ws.send(
-    JSON.stringify({
-      type: "connection",
-      status: "connected",
-      clientId: clientId,
-      kafka: isKafkaConnected ? "CONNECTED" : "CONNECTING",
-    })
+  console.log(
+    `New client connected: ID=${clientId}, IP=${req.socket.remoteAddress}`
   );
 
-  // Send element information for the client's reference
-  const elementInfo = {
-    type: "element_info",
-    elementCount: processedElementIds.size,
-    ebkphCodes: Object.keys(ifcElementsByEbkph),
-    projects: Object.keys(elementsByProject),
-    costCodes: Object.keys(unitCostsByEbkph),
-    timestamp: new Date().toISOString(),
-  };
+  // Set up ping/pong handlers
+  ws.on("ping", () => {
+    ws.lastPing = Date.now();
+    ws.pong();
+  });
 
-  try {
-    ws.send(JSON.stringify(elementInfo));
-    console.log(
-      `Sent element info to client ${clientId}: ${processedElementIds.size} elements available`
-    );
-  } catch (error) {
-    console.error(`Error sending element info to client ${clientId}:`, error);
-  }
+  ws.on("pong", () => {
+    ws.lastPing = Date.now();
+  });
 
-  // Handle client messages
-  ws.on("message", async (data) => {
+  // Handle incoming messages
+  ws.on("message", async (message) => {
     try {
-      console.log(
-        `Received message from client ${clientId}: ${data
-          .toString()
-          .substring(0, 200)}...`
-      );
-      const message = JSON.parse(data);
+      const data = JSON.parse(message);
+      console.log(`Received message from client ${clientId}:`, message);
 
-      // Handle ping messages to keep connection alive
-      if (message.type === "ping") {
-        console.log(`Received ping from client ${clientId}, sending pong`);
-        try {
-          ws.send(JSON.stringify({ type: "pong" }));
-        } catch (sendError) {
-          console.error(
-            `Error sending pong to client ${clientId}:`,
-            sendError.message
-          );
-        }
-        return;
-      }
-
-      // If this is a cost data message from Excel upload
-      if (message.type === "cost_data") {
-        console.log(`Client ${clientId} sent cost data from Excel`);
-
-        try {
-          // Validate the cost data
-          if (!message.data || !Array.isArray(message.data.data)) {
-            throw new Error("Invalid cost data format - missing data array");
-          }
-
-          // Extract unit costs from Excel data and store in memory
-          console.log(
-            `Processing ${message.data.data.length} unit costs from Excel`
-          );
-
-          // Store in memory first and respond immediately
-          // Clear existing unit costs if this is a new upload
-          if (message.data.replaceExisting) {
-            console.log("Clearing existing unit costs before storing new ones");
-            Object.keys(unitCostsByEbkph).forEach(
-              (key) => delete unitCostsByEbkph[key]
-            );
-          }
-
-          // Store unit costs by EBKPH code in memory
-          let storedCount = 0;
-          message.data.data.forEach((item) => {
-            if (item.ebkph && (item.cost_unit || item.kennwert)) {
-              // Normalize the code for consistent lookup
-              const normalizedCode = normalizeEbkpCode(item.ebkph);
-
-              // Store unit cost and additional metadata
-              unitCostsByEbkph[normalizedCode] = {
-                cost_unit: parseFloat(item.cost_unit || item.kennwert || 0),
-                category: item.category || item.bezeichnung || "",
-                timestamp: message.data.timestamp || new Date().toISOString(),
-                project: message.data.project || "excel-import",
-                filename: message.data.filename || "cost-data.xlsx",
-                originalCode: item.ebkph,
-                originalData: {
-                  menge: item.menge,
-                  einheit: item.einheit,
-                  kennwert: item.kennwert,
-                  chf: item.chf,
-                  totalChf: item.totalChf,
-                  kommentar: item.kommentar,
-                },
-              };
-
-              console.log(
-                `Stored unit cost for EBKPH ${item.ebkph} (normalized: ${normalizedCode}): ${unitCostsByEbkph[normalizedCode].cost_unit}`
-              );
-              storedCount++;
-            }
-          });
-
-          console.log(`Stored ${storedCount} unit costs in memory`);
-
-          // Send success response immediately
-          if (message.messageId) {
-            const response = {
-              type: "cost_data_response",
-              messageId: message.messageId,
-              status: "success",
-              message: `Successfully stored ${storedCount} unit costs in memory`,
-              timestamp: new Date().toISOString(),
-            };
-
-            try {
-              ws.send(JSON.stringify(response));
-              console.log(
-                `Sent successful response to client ${clientId} for message ${message.messageId}`
-              );
-            } catch (sendError) {
-              console.error(
-                `Error sending response to client ${clientId}:`,
-                sendError
-              );
-            }
-          }
-
-          // Process MongoDB operations in the background
-          (async () => {
-            try {
-              console.log(
-                `Starting MongoDB save operation for project ${
-                  message.data.project || "excel-import"
-                }`
-              );
-              const startTime = Date.now();
-
-              const result = await saveCostDataBatch(
-                message.data.data,
-                message.data.project || "excel-import"
-              );
-
-              const duration = Date.now() - startTime;
-              console.log(
-                `Successfully saved cost data batch to MongoDB in ${duration}ms: ${
-                  result?.insertedCount || 0
-                } items`
-              );
-
-              // Don't try to send another message as the client might be gone
-            } catch (dbError) {
-              console.error("Error saving cost data to MongoDB:", dbError);
-            }
-          })();
-        } catch (costError) {
-          console.error(
-            `Error processing unit costs for client ${clientId}:`,
-            costError
-          );
-
-          // Send error response
-          if (message.messageId) {
-            try {
-              ws.send(
-                JSON.stringify({
-                  type: "cost_data_response",
-                  messageId: message.messageId,
-                  status: "error",
-                  message: `Error processing unit costs: ${costError.message}`,
-                  timestamp: new Date().toISOString(),
-                })
-              );
-            } catch (sendError) {
-              console.error(
-                `Error sending error response to client ${clientId}:`,
-                sendError
-              );
-            }
-          }
-        }
-      } else if (message.type === "request_code_matching") {
+      if (data.type === "request_code_matching") {
         try {
           console.log(`Client ${clientId} requested code matching info`);
 
-          // Collect Excel cost codes
-          const excelCodes = Object.keys(unitCostsByEbkph).map((code) => ({
-            code,
-            originalCode: unitCostsByEbkph[code].originalCode || code,
-            unitCost: unitCostsByEbkph[code].cost_unit,
-          }));
+          // Force MongoDB load if requested
+          if (data.debug?.forceMongoDB && config.mongodb.enabled) {
+            console.log("DEBUG: Client requested to force MongoDB load");
+            await loadElementsFromMongoDB();
+            // Force refresh matches after MongoDB load
+            cachedMatches = null;
+            lastMatchTimestamp = null;
+          }
 
-          // Collect IFC element codes
-          const ifcCodes = Object.keys(ifcElementsByEbkph).map((code) => ({
-            code,
-            elementCount: ifcElementsByEbkph[code].length,
-          }));
+          // Get codes from the message
+          const excelCodes = data.debug?.excelCodes || [];
+          const normalizedCodes =
+            data.debug?.normalizedExcelCodes?.map((nc) => nc.normalized) || [];
 
-          // Find matching codes (simplified to respond faster)
-          const matchingCodes = excelCodes
-            .filter((ec) => ifcCodes.some((ic) => ic.code === ec.code))
-            .map((ec) => ({
-              code: ec.code,
-              unitCost: ec.unitCost,
-              elementCount:
-                ifcCodes.find((ic) => ic.code === ec.code)?.elementCount || 0,
-            }));
+          // Process matches (will use cache if available)
+          const matches = await batchProcessCodeMatches(
+            Object.values(ifcElementsByEbkph).flat(),
+            unitCostsByEbkph,
+            data.debug?.forceRefresh || false
+          );
 
-          // Send back the matching information immediately
+          // Send back all matches in a single message
           ws.send(
             JSON.stringify({
               type: "code_matching_info",
-              messageId: message.messageId, // Make sure to include the messageId for correlation
+              messageId: data.messageId,
               excelCodeCount: excelCodes.length,
-              ifcCodeCount: ifcCodes.length,
-              matchingCodes,
-              matchCount: matchingCodes.length,
+              ifcCodeCount: Object.keys(ifcElementsByEbkph).length,
+              matches: matches,
+              matchCount: matches.length,
               timestamp: new Date().toISOString(),
+              isCached: !data.debug?.forceRefresh && cachedMatches !== null,
+              debug: {
+                serverExcelCodes: Object.keys(unitCostsByEbkph),
+                serverIfcCodes: Object.keys(ifcElementsByEbkph),
+                processedCodes: Array.from(processedCodes),
+                sampleElement:
+                  Object.keys(ifcElementsByEbkph).length > 0
+                    ? JSON.stringify(
+                        ifcElementsByEbkph[
+                          Object.keys(ifcElementsByEbkph)[0]
+                        ][0]
+                      )
+                    : null,
+              },
             })
           );
         } catch (error) {
-          console.error(`Error processing code matching request: ${error}`);
+          console.error("Error in code matching request:", error);
           ws.send(
             JSON.stringify({
-              type: "error",
-              messageId: message.messageId, // Include messageId in error responses too
+              type: "code_matching_info",
+              messageId: data.messageId,
               status: "error",
-              message: `Error processing code matching request: ${error.message}`,
+              message: error.message,
             })
           );
         }
-      } else if (message.type === "reapply_costs") {
-        try {
-          console.log(
-            `Client ${clientId} requested to reapply cost data to all elements`
-          );
-
-          if (Object.keys(unitCostsByEbkph).length === 0) {
-            ws.send(
-              JSON.stringify({
-                type: "reapply_costs_response",
-                status: "warning",
-                message:
-                  "No unit costs available to apply. Please upload an Excel file with cost data first.",
-              })
-            );
-            return;
-          }
-
-          // Process all stored elements
-          const enhancedElements = [];
-          let processedCount = 0;
-          let matchedCodes = {};
-
-          Object.keys(ifcElementsByEbkph).forEach((ebkpCode) => {
-            const elements = ifcElementsByEbkph[ebkpCode];
-
-            // Find the best match for this EBKPH code
-            const bestMatch = findBestEbkphMatch(ebkpCode);
-
-            if (bestMatch) {
-              const costInfo = bestMatch.costInfo;
-              const costUnit = costInfo.cost_unit || 0;
-
-              console.log(
-                `Found ${bestMatch.method} match for EBKPH ${ebkpCode}: ${bestMatch.code}, unit cost = ${costUnit}`
-              );
-
-              if (!matchedCodes[bestMatch.code]) {
-                matchedCodes[bestMatch.code] = {
-                  elementCount: 0,
-                  costUnit: costUnit,
-                };
-              }
-
-              // Process all elements with this code
-              elements.forEach((element) => {
-                const area = parseFloat(element.area || 0);
-
-                // Create enhanced element
-                const enhancedElement = {
-                  ...element,
-                  cost_unit: costUnit,
-                  cost: costUnit * (area || 1),
-                  cost_source: costInfo.filename,
-                  cost_timestamp: costInfo.timestamp,
-                  cost_match_method: bestMatch.method,
-                };
-
-                // Ensure EBKPH components are present
-                if (costInfo.ebkph1 && !enhancedElement.ebkph1) {
-                  enhancedElement.ebkph1 = costInfo.ebkph1;
-                }
-                if (costInfo.ebkph2 && !enhancedElement.ebkph2) {
-                  enhancedElement.ebkph2 = costInfo.ebkph2;
-                }
-                if (costInfo.ebkph3 && !enhancedElement.ebkph3) {
-                  enhancedElement.ebkph3 = costInfo.ebkph3;
-                }
-
-                // Add to list for batch processing
-                enhancedElements.push(enhancedElement);
-                processedCount++;
-                matchedCodes[bestMatch.code].elementCount++;
-              });
-            }
-          });
-
-          // Send all enhanced elements to database
-          if (enhancedElements.length > 0) {
-            console.log(
-              `Saving ${enhancedElements.length} enhanced IFC elements to database`
-            );
-
-            // Batch process in chunks of 50 to avoid overwhelming the database
-            const batchSize = 50;
-            let savedCount = 0;
-            let errorCount = 0;
-
-            for (let i = 0; i < enhancedElements.length; i += batchSize) {
-              const batch = enhancedElements.slice(i, i + batchSize);
-              console.log(
-                `Processing batch ${i / batchSize + 1}/${Math.ceil(
-                  enhancedElements.length / batchSize
-                )}`
-              );
-
-              // Create promises for saving each element
-              const savePromises = batch.map(async (element) => {
-                try {
-                  // Prepare element data for database
-                  const elementData = {
-                    _id: element.id || element._id, // Use existing ID or generate new one
-                    project_id: element.project_id || "default-project", // Use existing project ID or default
-                    ebkp_code: element.ebkph,
-                    area: element.area || 0,
-                    volume: element.volume || 0,
-                    length: element.length || 0,
-                    metadata: {
-                      source: "excel-import",
-                      timestamp: new Date().toISOString(),
-                      filename: message.data.filename || "cost-data.xlsx",
-                    },
-                  };
-
-                  // Prepare cost result
-                  const costResult = {
-                    unitCost: element.cost_unit || 0,
-                    totalCost: element.cost || 0,
-                    currency: "CHF",
-                    method: "excel-import",
-                  };
-
-                  const result = await saveCostData(elementData, costResult);
-                  savedCount++;
-                  return result;
-                } catch (error) {
-                  console.error(
-                    `Error saving element ${element.id || element._id}:`,
-                    error
-                  );
-                  errorCount++;
-                  return null;
-                }
-              });
-
-              // Wait for all saves to complete
-              await Promise.all(savePromises);
-
-              console.log(
-                `Batch ${
-                  i / batchSize + 1
-                } complete: ${savedCount} saved, ${errorCount} errors`
-              );
-            }
-
-            // Send success response back to client
-            if (message.messageId) {
-              const response = {
-                type: "cost_data_response",
-                messageId: message.messageId,
-                status: savedCount > 0 ? "success" : "error",
-                message: `Processed ${enhancedElements.length} elements: ${savedCount} saved, ${errorCount} errors`,
-                timestamp: new Date().toISOString(),
-              };
-              ws.send(JSON.stringify(response));
-            }
-          } else {
-            // Send success response even if no elements were processed
-            if (message.messageId) {
-              const response = {
-                type: "cost_data_response",
-                messageId: message.messageId,
-                status: "success",
-                message:
-                  "Successfully processed cost data (no elements to save)",
-                timestamp: new Date().toISOString(),
-              };
-              ws.send(JSON.stringify(response));
-            }
-          }
-        } catch (error) {
-          console.error(`Error reapplying costs: ${error}`);
-          ws.send(
-            JSON.stringify({
-              type: "reapply_costs_response",
-              status: "error",
-              message: `Error reapplying costs: ${error.message}`,
-            })
-          );
-        }
-      } else {
-        console.log(
-          `Client ${clientId} sent unknown message type: ${message.type}`
-        );
+      } else if (data.type === "ping") {
+        console.log(`Received ping from client ${clientId}, sending pong`);
+        ws.send(JSON.stringify({ type: "pong" }));
       }
     } catch (error) {
-      console.error(`Error processing client ${clientId} message:`, error);
-
-      // Send error response
-      try {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            status: "error",
-            message: `Error processing message: ${error.message}`,
-          })
-        );
-      } catch (sendError) {
-        console.error(
-          `Error sending error response to client ${clientId}:`,
-          sendError
-        );
-      }
+      console.error(`Error processing message from client ${clientId}:`, error);
     }
   });
 
   // Handle client disconnection
-  ws.on("close", (code, reason) => {
+  ws.on("close", () => {
     console.log(
-      `Client ${clientId} disconnected: code=${code}, reason=${
-        reason || "No reason provided"
-      }`
+      `Client ${clientId} disconnected: code=${ws.closeCode}, reason=${ws.closeReason}`
     );
-
-    // Remove the client from our map
     clients.delete(clientId);
-
-    // Log the number of remaining clients
     console.log(`Remaining clients: ${clients.size}`);
   });
 
   // Handle errors
   ws.on("error", (error) => {
-    console.error(`WebSocket error for client ${clientId}:`, error.message);
-
-    // Try to close the connection gracefully
-    try {
-      ws.close();
-    } catch (closeError) {
-      console.error(
-        `Error closing connection for client ${clientId}:`,
-        closeError.message
-      );
-      // Terminate the connection forcefully if close fails
-      ws.terminate();
-    }
-
-    // Remove the client from our map
-    clients.delete(clientId);
+    console.error(`WebSocket error for client ${clientId}:`, error);
   });
+
+  // Send initial element info
+  ws.send(
+    JSON.stringify({
+      type: "element_info",
+      elementCount: Object.keys(ifcElementsByEbkph).length,
+      timestamp: new Date().toISOString(),
+    })
+  );
 });
 
 // Function to broadcast messages to all connected clients
@@ -1579,11 +1212,84 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 // Start the server
-server.listen(config.websocket.port, () => {
+server.listen(config.websocket.port, async () => {
   console.log(`WebSocket server started on port ${config.websocket.port}`);
 
-  // Load existing elements from file
-  loadElementsFromFile();
+  try {
+    // Load elements from MongoDB immediately
+    console.log("Loading elements from MongoDB...");
+    const db = await connectToMongoDB();
+
+    if (!db || !db.qtoDb) {
+      console.error("Failed to connect to MongoDB or get qtoDb reference");
+    } else {
+      // Query all elements
+      const elements = await db.qtoDb.collection("elements").find({}).toArray();
+      console.log(`Found ${elements.length} elements in MongoDB`);
+
+      // Clear existing data
+      Object.keys(ifcElementsByEbkph).forEach(
+        (key) => delete ifcElementsByEbkph[key]
+      );
+      processedElementIds.clear();
+
+      // Process elements
+      let processedCount = 0;
+      for (const element of elements) {
+        // Try to extract eBKP code from various locations
+        let ebkpCode = null;
+
+        // Check in properties.classification.id first (most common MongoDB format)
+        if (element.properties?.classification?.id) {
+          ebkpCode = element.properties.classification.id;
+        }
+        // Then try properties.ebkph
+        else if (element.properties?.ebkph) {
+          ebkpCode = element.properties.ebkph;
+        }
+        // Finally, check root level properties
+        else if (element.ebkph) {
+          ebkpCode = element.ebkph;
+        } else if (element.ebkp_code) {
+          ebkpCode = element.ebkp_code;
+        }
+
+        if (ebkpCode) {
+          // Normalize code for consistent matching
+          const normalizedCode = normalizeEbkpCode(ebkpCode);
+
+          // Store element by normalized code
+          if (!ifcElementsByEbkph[normalizedCode]) {
+            ifcElementsByEbkph[normalizedCode] = [];
+          }
+
+          // Get quantity from root level
+          const quantity = element.quantity || 0;
+
+          // Store element with quantity as area
+          ifcElementsByEbkph[normalizedCode].push({
+            ...element,
+            area: quantity, // Use quantity as area
+            quantity: quantity, // Keep original quantity
+          });
+          processedCount++;
+
+          // Mark as processed to avoid duplicates
+          processedElementIds.add(element._id.toString());
+        }
+      }
+
+      console.log(
+        `Successfully loaded ${processedCount} elements from MongoDB with eBKP codes`
+      );
+      console.log(`Available eBKP codes:`, Object.keys(ifcElementsByEbkph));
+
+      // Print QTO element codes summary
+      await printAllQtoElementCodes();
+    }
+  } catch (error) {
+    console.error("Error loading elements from MongoDB:", error);
+  }
 
   // Start the Kafka connection and ensure topics exist
   run().catch(console.error);
@@ -1608,6 +1314,8 @@ server.listen(config.websocket.port, () => {
 // Normalize EBKPH code (used for matching)
 function normalizeEbkpCode(code) {
   if (!code) return code;
+
+  console.log(`DEBUG: Normalizing code: "${code}"`);
 
   // Convert to uppercase for consistent matching
   const upperCode = code.toUpperCase().trim();
@@ -1634,104 +1342,7 @@ function normalizeEbkpCode(code) {
   // Handle special case "C.1" format (missing number after letter)
   normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
 
-  // Debug log
-  if (normalized !== upperCode) {
-    console.log(`Normalized EBKPH code from ${upperCode} to ${normalized}`);
-  }
-
   return normalized;
-}
-
-// Save elements to JSON file
-let saveScheduled = false;
-
-function scheduleElementSave() {
-  if (!saveScheduled) {
-    saveScheduled = true;
-    setTimeout(saveElementsToFile, 10000); // Save after 10 seconds of inactivity
-  }
-}
-
-async function saveElementsToFile() {
-  try {
-    saveScheduled = false;
-
-    // Check if we have elements to save
-    const totalElements = Object.values(ifcElementsByEbkph).reduce(
-      (count, elements) => count + elements.length,
-      0
-    );
-
-    if (totalElements === 0) {
-      console.log("No elements to save, skipping file write");
-      return;
-    }
-
-    console.log(
-      `Saving ${totalElements} IFC elements to ${config.storage.elementFile}`
-    );
-
-    // Prepare data structure for saving
-    const dataToSave = {
-      elementsByEbkph: ifcElementsByEbkph,
-      elementsByProject: elementsByProject,
-      timestamp: new Date().toISOString(),
-      elementCount: totalElements,
-    };
-
-    // Write to file
-    fs.writeFileSync(
-      config.storage.elementFile,
-      JSON.stringify(dataToSave, null, 2)
-    );
-
-    console.log(`Successfully saved ${totalElements} elements to file`);
-
-    // Broadcast element update to all clients
-    broadcastElementUpdate();
-  } catch (error) {
-    console.error("Error saving elements to file:", error);
-  }
-}
-
-// Load elements from file on startup
-function loadElementsFromFile() {
-  try {
-    if (fs.existsSync(config.storage.elementFile)) {
-      console.log(`Loading elements from ${config.storage.elementFile}`);
-
-      const fileData = fs.readFileSync(config.storage.elementFile, "utf8");
-      const data = JSON.parse(fileData);
-
-      // Restore the data structures
-      if (data.elementsByEbkph) {
-        Object.assign(ifcElementsByEbkph, data.elementsByEbkph);
-      }
-
-      if (data.elementsByProject) {
-        Object.assign(elementsByProject, data.elementsByProject);
-      }
-
-      // Rebuild the processed IDs set
-      Object.values(ifcElementsByEbkph).forEach((elements) => {
-        elements.forEach((element) => {
-          const id = element.element_id || element.id;
-          if (id) {
-            processedElementIds.add(id);
-          }
-        });
-      });
-
-      console.log(`Loaded ${processedElementIds.size} elements from file`);
-    } else {
-      console.log(
-        `Element file ${config.storage.elementFile} not found, starting with empty storage`
-      );
-    }
-  } catch (error) {
-    console.error("Error loading elements from file:", error);
-    // Continue with empty storage
-  }
 }
 
 // Add a helper function to send element updates to all clients
@@ -1824,4 +1435,72 @@ function findBestEbkphMatch(normalizedCode) {
   }
 
   return null;
+}
+
+// Add a function to batch process code matches
+async function batchProcessCodeMatches(
+  elements,
+  unitCosts,
+  forceRefresh = false
+) {
+  // Return cached matches if they exist and are not expired
+  if (!forceRefresh && cachedMatches && lastMatchTimestamp) {
+    const age = Date.now() - lastMatchTimestamp;
+    if (age < MATCH_CACHE_DURATION) {
+      console.log("Returning cached matches");
+      return cachedMatches;
+    }
+  }
+
+  console.log("Processing new matches");
+  const matches = [];
+  const processedCodes = new Set();
+
+  // Create a map of normalized codes for faster lookup
+  const normalizedCostCodes = new Map();
+  Object.entries(unitCosts).forEach(([code, costInfo]) => {
+    const normalizedCode = normalizeEbkpCode(code);
+    normalizedCostCodes.set(normalizedCode, { code, costInfo });
+  });
+
+  // Process all elements at once
+  for (const element of elements) {
+    const ebkpCode =
+      element.properties?.classification?.id ||
+      element.ebkph ||
+      element.ebkp_code;
+
+    if (!ebkpCode || processedCodes.has(ebkpCode)) continue;
+
+    const normalizedCode = normalizeEbkpCode(ebkpCode);
+    const match = findBestEbkphMatch(normalizedCode);
+
+    if (match) {
+      const costInfo = match.costInfo;
+      const area = parseFloat(element.quantity || 0);
+      const costUnit = costInfo.cost_unit || 0;
+      const totalCost = costUnit * (area || 1);
+
+      matches.push({
+        code: match.code,
+        excelCode: ebkpCode,
+        normalizedExcelCode: normalizedCode,
+        elementCount: 1,
+        quantity: area,
+        matchType: match.method,
+        unitCost: costUnit,
+        totalCost: totalCost,
+        cost_source: costInfo.filename,
+        cost_timestamp: costInfo.timestamp,
+      });
+
+      processedCodes.add(ebkpCode);
+    }
+  }
+
+  // Cache the results
+  cachedMatches = matches;
+  lastMatchTimestamp = Date.now();
+
+  return matches;
 }
