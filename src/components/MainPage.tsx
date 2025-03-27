@@ -151,14 +151,15 @@ const MainPage = () => {
     // Store the most recent cost data for Kafka-based calculations
     if (costData && costData.length > 0) {
       setCurrentCostData(costData);
-    }
 
-    // Calculate total from cost data if available
-    let totalCost = 0;
-    if (costData && costData.length > 0) {
-      // The initial total cost is calculated here but will be updated
-      // by the useEffect when Kafka data changes
-      totalCost = calculateTotalCost(costData);
+      // Calculate total cost from the cost data
+      const totalCost = costData.reduce((sum, item) => {
+        // Only add the main row's totalChf value
+        return sum + (item.totalChf || 0);
+      }, 0);
+
+      // Update the total cost sum
+      setTotalCostSum(totalCost);
     }
 
     // Handle file removal
@@ -183,8 +184,15 @@ const MainPage = () => {
       return; // Exit early since we've handled the deletion
     } else {
       // For all new uploads and updates, set the total cost to this file's cost
-      // This replaces the previous total rather than adding to it
-      setTotalCostSum(totalCost);
+      if (costData && costData.length > 0) {
+        // Calculate total cost from the cost data
+        const totalCost = costData.reduce((sum, item) => {
+          // Only add the main row's totalChf value
+          return sum + (item.totalChf || 0);
+        }, 0);
+
+        setTotalCostSum(totalCost);
+      }
     }
 
     if (isUpdate) {
@@ -196,7 +204,7 @@ const MainPage = () => {
                 ...file,
                 status: "Erfolgreich",
                 date: date || file.date,
-                totalCost: totalCost,
+                totalCost: totalCostSum,
               }
             : file
         )
@@ -208,7 +216,7 @@ const MainPage = () => {
           name: fileName,
           date: date || new Date().toLocaleDateString(),
           status: status || "Vorschau",
-          totalCost: totalCost,
+          totalCost: totalCostSum,
         },
         ...prev,
       ]);
@@ -217,8 +225,8 @@ const MainPage = () => {
 
   const formatCurrency = (amount: number): string => {
     return amount.toLocaleString("de-CH", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     });
   };
 
@@ -360,12 +368,12 @@ const MainPage = () => {
           const category = element.properties?.category || "Unknown";
           categoryCounts[category] = (categoryCounts[category] || 0) + 1;
 
-          // Count elements that have been mapped by eBKP
+          // Count by eBKP code
           const ebkpCode =
-            element.classification?.id || element.properties?.ebkph;
-          if (ebkpCode && ebkpCode !== "Unknown") {
-            ebkpCounts[ebkpCode] = (ebkpCounts[ebkpCode] || 0) + 1;
-          }
+            element.classification?.id ||
+            element.properties?.ebkph ||
+            "Unknown";
+          ebkpCounts[ebkpCode] = (ebkpCounts[ebkpCode] || 0) + 1;
         });
 
         setElementsByCategory(categoryCounts);
@@ -383,34 +391,6 @@ const MainPage = () => {
             },
           }));
         }
-
-        // Calculate project statistics
-        let elementsWithCost = 0;
-        let totalCost = 0;
-
-        elements.forEach((element) => {
-          // Count elements that have been mapped by eBKP
-          const ebkpCode =
-            element.classification?.id || element.properties?.ebkph;
-          if (ebkpCode && ebkpCode !== "Unknown") {
-            elementsWithCost++;
-          }
-          // Also track total cost if available
-          if (element.cost && element.cost > 0) {
-            totalCost += element.cost;
-          }
-        });
-
-        // Update project stats
-        setProjectStats({
-          totalElements: elements.length,
-          elementsWithCost: elementsWithCost,
-          totalCost: totalCost,
-          lastUpdated: new Date().toISOString(),
-        });
-
-        // Update total cost
-        setTotalCost(totalCost);
 
         // Finish loading
         setLoadingElements(false);
@@ -591,14 +571,8 @@ const MainPage = () => {
           let totalCost = 0;
 
           elements.forEach((element) => {
-            // Count elements that have been mapped by eBKP
-            const ebkpCode =
-              element.classification?.id || element.properties?.ebkph;
-            if (ebkpCode && ebkpCode !== "Unknown") {
-              elementsWithCost++;
-            }
-            // Also track total cost if available
             if (element.cost && element.cost > 0) {
+              elementsWithCost++;
               totalCost += element.cost;
             }
           });
@@ -659,14 +633,8 @@ const MainPage = () => {
             let totalCost = 0;
 
             elements.forEach((element) => {
-              // Count elements that have been mapped by eBKP
-              const ebkpCode =
-                element.classification?.id || element.properties?.ebkph;
-              if (ebkpCode && ebkpCode !== "Unknown") {
-                elementsWithCost++;
-              }
-              // Also track total cost if available
               if (element.cost && element.cost > 0) {
+                elementsWithCost++;
                 totalCost += element.cost;
               }
             });
@@ -899,6 +867,7 @@ const MainPage = () => {
                 mb: 2,
                 background: "linear-gradient(to right top, #F1D900, #fff176)",
                 borderRadius: 1,
+                textAlign: "center",
               }}
             >
               <Typography
@@ -1146,7 +1115,11 @@ const MainPage = () => {
 
             {/* Cost Uploader Component */}
             <div className="flex-grow flex flex-col h-full">
-              <CostUploader onFileUploaded={handleFileUploaded} />
+              <CostUploader
+                onFileUploaded={handleFileUploaded}
+                totalElements={projectStats.totalElements}
+                totalCost={totalCostSum}
+              />
             </div>
           </div>
         </div>

@@ -38,6 +38,7 @@ interface PreviewModalProps {
   onClose: () => void;
   onConfirm: (matches: any[]) => void;
   metaFile: MetaFile | null;
+  totalCost: number;
 }
 
 interface MatchInfo {
@@ -104,6 +105,7 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   onClose,
   onConfirm,
   metaFile,
+  totalCost,
 }) => {
   const [loading, setLoading] = useState(false);
   const [elementInfo, setElementInfo] = useState<ElementInfo | null>(null);
@@ -367,10 +369,7 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   });
 
   // Calculate stats for the preview
-  const totalElementsToUpdate = potentialMatches.reduce(
-    (sum, match) => sum + match.elementCount,
-    0
-  );
+  const totalElementsToUpdate = elementInfo ? elementInfo.elementCount : 0;
   const matchedCodes = new Set(
     potentialMatches.map((m) => normalizeEbkpCode(m.code))
   );
@@ -389,15 +388,10 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
       ? Math.round((totalCodesWithMatches / totalCodesInExcel) * 100)
       : 0;
 
-  // Calculate total cost based on matches
-  const totalCost = potentialMatches.reduce(
-    (sum, match) => sum + match.costUnit * match.elementCount,
-    0
-  );
-
   // Calculate cost by main code group
   const costByGroup = Object.entries(groupedMatches).reduce(
     (acc: { [key: string]: number }, [group, matches]) => {
+      // Sum up all Total CHF values for this group
       acc[group] = matches.reduce(
         (sum, match) => sum + match.costUnit * match.elementCount,
         0

@@ -43,6 +43,7 @@ interface CostTableRowProps {
     value: number | null | undefined,
     decimals?: number
   ) => React.ReactElement | string;
+  totalElements: number;
 }
 
 const CostTableRow = ({
@@ -53,6 +54,7 @@ const CostTableRow = ({
   isMobile,
   cellStyles,
   renderNumber,
+  totalElements,
 }: CostTableRowProps) => {
   // Add state to track if QTO data is available
   const [hasQtoState, setHasQtoState] = useState<boolean>(false);
@@ -118,32 +120,45 @@ const CostTableRow = ({
   // Update the calculateTotalsFromChildren function to fix TypeScript errors
   const calculateTotalsFromChildren = (
     item: CostItem
-  ): { area: number; cost: number } => {
+  ): { area: number; cost: number; elementCount: number } => {
     if (!item.children || item.children.length === 0) {
-      return { area: 0, cost: 0 };
+      return { area: 0, cost: 0, elementCount: 0 };
     }
 
-    return item.children.reduce<{ area: number; cost: number }>(
+    return item.children.reduce<{
+      area: number;
+      cost: number;
+      elementCount: number;
+    }>(
       (acc, child) => {
         // If child has direct area from MongoDB, add it
         if (child.area !== undefined) {
           acc.area += child.area;
           acc.cost += child.area * (child.kennwert || 0);
+          // Only count elements at the leaf level (no children)
+          if (!child.children || child.children.length === 0) {
+            acc.elementCount += child.element_count || 1;
+          }
         }
         // If child has its own children, add their totals
         if (child.children && child.children.length > 0) {
           const childTotals = calculateTotalsFromChildren(child);
           acc.area += childTotals.area;
           acc.cost += childTotals.cost;
+          acc.elementCount += childTotals.elementCount;
         }
         // If child has no IFC data but has a menge, add it
         if (child.area === undefined && child.menge !== undefined) {
           acc.area += child.menge || 0;
           acc.cost += (child.menge || 0) * (child.kennwert || 0);
+          // Only count non-IFC items at the leaf level
+          if (!child.children || child.children.length === 0) {
+            acc.elementCount += 1;
+          }
         }
         return acc;
       },
-      { area: 0, cost: 0 }
+      { area: 0, cost: 0, elementCount: 0 }
     );
   };
 
@@ -153,7 +168,7 @@ const CostTableRow = ({
     originalMenge: number | null | undefined
   ): number | null | undefined => {
     // Calculate total area from children
-    const { area } = calculateTotalsFromChildren(item);
+    const { area, elementCount } = calculateTotalsFromChildren(item);
 
     // If we have a total area from children, use it
     if (area > 0) {
@@ -493,6 +508,7 @@ const CostTableRow = ({
                       isMobile={isMobile}
                       cellStyles={cellStyles}
                       renderNumber={renderNumber}
+                      totalElements={totalElements}
                     />
                   ))}
                 </TableBody>

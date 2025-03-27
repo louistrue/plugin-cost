@@ -40,7 +40,8 @@ interface HierarchicalTableProps {
   toggleRow: (code: string) => void;
   isMobile: boolean;
   isLoading: boolean;
-  mappingMessage: string;
+  mappingMessage?: string;
+  totalElements: number;
 }
 
 const HierarchicalTable = ({
@@ -50,6 +51,7 @@ const HierarchicalTable = ({
   isMobile,
   isLoading,
   mappingMessage,
+  totalElements,
 }: HierarchicalTableProps) => {
   // Cell styles for alignment and formatting
   const cellStyles: CellStyles = createCellStyles(isMobile);
@@ -197,6 +199,7 @@ const HierarchicalTable = ({
                 isMobile={isMobile}
                 cellStyles={cellStyles}
                 renderNumber={renderNumber}
+                totalElements={totalElements}
               />
             ))}
           </TableBody>

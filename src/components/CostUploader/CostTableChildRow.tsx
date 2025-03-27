@@ -43,6 +43,7 @@ interface CostTableChildRowProps {
     value: number | null | undefined,
     decimals?: number
   ) => React.ReactElement | string;
+  totalElements: number;
 }
 
 const CostTableChildRow = ({
@@ -52,6 +53,7 @@ const CostTableChildRow = ({
   isMobile,
   cellStyles,
   renderNumber,
+  totalElements,
 }: Omit<CostTableChildRowProps, "expandedRows">) => {
   // Add state to track if QTO data is available
   const [hasQtoState, setHasQtoState] = useState<boolean>(false);
@@ -117,7 +119,7 @@ const CostTableChildRow = ({
   // Update the calculateTotalsFromChildren function to handle grandchild sums
   const calculateTotalsFromChildren = (item: CostItem) => {
     if (!item.children || item.children.length === 0) {
-      return { area: 0, cost: 0, chf: 0 };
+      return { area: 0, cost: 0, chf: 0, elementCount: 0 };
     }
 
     return item.children.reduce(
@@ -127,6 +129,10 @@ const CostTableChildRow = ({
           acc.area += child.area;
           acc.cost += child.area * (child.kennwert || 0);
           acc.chf += child.area * (child.kennwert || 0);
+          // Only count elements at the leaf level (no children)
+          if (!child.children || child.children.length === 0) {
+            acc.elementCount += child.element_count || 1;
+          }
         }
         // If child has its own children (grandchildren), add their totals
         if (child.children && child.children.length > 0) {
@@ -134,16 +140,21 @@ const CostTableChildRow = ({
           acc.area += childTotals.area;
           acc.cost += childTotals.cost;
           acc.chf += childTotals.chf;
+          acc.elementCount += childTotals.elementCount;
         }
         // If child has no IFC data but has a menge, add it
         if (child.area === undefined && child.menge !== undefined) {
           acc.area += child.menge;
           acc.cost += child.menge * (child.kennwert || 0);
           acc.chf += child.menge * (child.kennwert || 0);
+          // Only count non-IFC items at the leaf level
+          if (!child.children || child.children.length === 0) {
+            acc.elementCount += 1;
+          }
         }
         return acc;
       },
-      { area: 0, cost: 0, chf: 0 }
+      { area: 0, cost: 0, chf: 0, elementCount: 0 }
     );
   };
 
@@ -153,7 +164,7 @@ const CostTableChildRow = ({
     originalMenge: number | null | undefined
   ) => {
     // Calculate total area from grandchildren
-    const { area } = calculateTotalsFromChildren(item);
+    const { area, elementCount } = calculateTotalsFromChildren(item);
 
     // If we have a total area from grandchildren, use it
     if (area > 0) {
@@ -466,6 +477,7 @@ const CostTableChildRow = ({
                         isMobile={isMobile}
                         cellStyles={cellStyles}
                         renderNumber={renderNumber}
+                        totalElements={totalElements}
                       />
                     ))}
                   </TableBody>

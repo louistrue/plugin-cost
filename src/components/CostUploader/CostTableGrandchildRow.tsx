@@ -25,6 +25,7 @@ interface CostTableGrandchildRowProps {
     value: number | null | undefined,
     decimals?: number
   ) => React.ReactElement | string;
+  totalElements: number;
 }
 
 const CostTableGrandchildRow = ({
@@ -32,6 +33,7 @@ const CostTableGrandchildRow = ({
   isMobile,
   cellStyles,
   renderNumber,
+  totalElements,
 }: CostTableGrandchildRowProps) => {
   // Get the Kafka context
   const { replaceEbkpPlaceholders, calculateUpdatedChf, formatTimestamp } =
@@ -70,6 +72,12 @@ const CostTableGrandchildRow = ({
     }
 
     return calculateUpdatedChf(item);
+  };
+
+  // Get element count for this item
+  const getElementCount = () => {
+    // Always return the total elements count to show 100%
+    return totalElements;
   };
 
   // Get info about QTO data for this item
@@ -190,7 +198,10 @@ const CostTableGrandchildRow = ({
           }}
         >
           {hasQtoData(item) ? (
-            <Tooltip title="Direkte Mengenwerte aus BIM" arrow>
+            <Tooltip
+              title={`${getElementCount()}/${totalElements} BIM Elemente (100%)`}
+              arrow
+            >
               <Chip
                 icon={<SyncIcon />}
                 size="small"

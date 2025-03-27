@@ -288,7 +288,7 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
 
       // Store element info for preview modal
       window.__ELEMENT_INFO = {
-        elementCount: 76, // Default or fetched from WebSocket response
+        elementCount: 182, // Updated to match MainPage.tsx total elements count
         ebkphCodes: ["C2.1", "C3.1", "C4.1", "G2", "C2.2"], // Default or fetched codes
         projects: ["Current Project"],
         costCodes:

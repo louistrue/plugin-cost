@@ -12,7 +12,23 @@ import FileInfo from "./FileInfo";
 import HierarchicalTable from "./HierarchicalTable";
 import PreviewModal from "./PreviewModal";
 
-const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
+interface CostUploaderProps {
+  onFileUploaded?: (
+    fileName: string,
+    date?: string,
+    status?: string,
+    costData?: CostItem[],
+    isUpdate?: boolean
+  ) => void;
+  totalElements: number;
+  totalCost: number;
+}
+
+const CostUploader = ({
+  onFileUploaded,
+  totalElements,
+  totalCost,
+}: CostUploaderProps) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [metaFile, setMetaFile] = useState<MetaFile | null>(null);
@@ -244,6 +260,7 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
               isMobile={isMobile}
               isLoading={isLoading}
               mappingMessage={mappingMessage}
+              totalElements={totalElements}
             />
 
             {/* Preview Modal */}
@@ -252,6 +269,7 @@ const CostUploader = ({ onFileUploaded }: CostUploaderProps) => {
               onClose={() => setPreviewOpen(false)}
               onConfirm={handleConfirmPreview}
               metaFile={metaFile}
+              totalCost={totalCost}
             />
           </div>
         </div>
