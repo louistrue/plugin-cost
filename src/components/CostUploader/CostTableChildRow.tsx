@@ -12,7 +12,6 @@ import {
 } from "@mui/material";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
-import SyncIcon from "@mui/icons-material/Sync";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { CostItem } from "./types";
 import { getColumnStyle, columnWidths } from "./styles";
@@ -30,6 +29,14 @@ interface CellStyles {
   chf?: React.CSSProperties;
   totalChf?: React.CSSProperties;
   [key: string]: React.CSSProperties | undefined;
+}
+
+// Added interface for reducer accumulator
+interface ChildTotals {
+  area: number;
+  cost: number;
+  chf: number;
+  elementCount: number;
 }
 
 interface CostTableChildRowProps {
@@ -117,12 +124,12 @@ const CostTableChildRow = ({
   };
 
   // Update the calculateTotalsFromChildren function to handle grandchild sums
-  const calculateTotalsFromChildren = (item: CostItem) => {
+  const calculateTotalsFromChildren = (item: CostItem): ChildTotals => {
     if (!item.children || item.children.length === 0) {
       return { area: 0, cost: 0, chf: 0, elementCount: 0 };
     }
 
-    return item.children.reduce(
+    return item.children.reduce<ChildTotals>(
       (acc, child) => {
         // If child has direct area from MongoDB, add it
         if (child.area !== undefined) {
@@ -144,9 +151,9 @@ const CostTableChildRow = ({
         }
         // If child has no IFC data but has a menge, add it
         if (child.area === undefined && child.menge !== undefined) {
-          acc.area += child.menge;
-          acc.cost += child.menge * (child.kennwert || 0);
-          acc.chf += child.menge * (child.kennwert || 0);
+          acc.area += child.menge || 0;
+          acc.cost += (child.menge || 0) * (child.kennwert || 0);
+          acc.chf += (child.menge || 0) * (child.kennwert || 0);
           // Only count non-IFC items at the leaf level
           if (!child.children || child.children.length === 0) {
             acc.elementCount += 1;
@@ -159,12 +166,9 @@ const CostTableChildRow = ({
   };
 
   // Update the getMengeValue function to use grandchild sums
-  const getMengeValue = (
-    ebkpCode: string,
-    originalMenge: number | null | undefined
-  ) => {
+  const getMengeValue = (originalMenge: number | null | undefined) => {
     // Calculate total area from grandchildren
-    const { area, elementCount } = calculateTotalsFromChildren(item);
+    const { area } = calculateTotalsFromChildren(item);
 
     // If we have a total area from grandchildren, use it
     if (area > 0) {
@@ -195,7 +199,7 @@ const CostTableChildRow = ({
     if (item.area !== undefined) {
       return {
         value: item.area,
-        timestamp: item.timestamp || new Date().toISOString(),
+        timestamp: item.kafkaTimestamp || new Date().toISOString(),
         source: item.areaSource || "BIM",
       };
     }
@@ -275,7 +279,7 @@ const CostTableChildRow = ({
               <IconButton
                 aria-label="expand row"
                 size="small"
-                onClick={() => onToggle(item.ebkp)}
+                onClick={() => onToggle(item.ebkp || "")}
                 sx={
                   hasQtoInTree && !hasQtoData(item)
                     ? {
@@ -334,7 +338,7 @@ const CostTableChildRow = ({
                   label={
                     <Box sx={{ display: "flex", alignItems: "center" }}>
                       <span>Σ </span>
-                      {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+                      {renderNumber(getMengeValue(item.menge), 2)}
                     </Box>
                   }
                   variant="outlined"
@@ -352,7 +356,7 @@ const CostTableChildRow = ({
                 />
               </Tooltip>
             ) : (
-              renderNumber(getMengeValue(item.ebkp, item.menge), 2)
+              renderNumber(getMengeValue(item.menge), 2)
             )}
 
             {hasQtoData(item) && <DataSourceInfo />}

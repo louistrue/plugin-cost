@@ -7,22 +7,26 @@ export interface CostItem {
   children?: CostItem[];
   ebkp?: string;
   bezeichnung?: string;
-  menge?: number;
+  menge?: number | null;
   einheit?: string;
-  kennwert?: number;
-  chf?: number;
-  totalChf?: number;
+  kennwert?: number | null;
+  chf?: number | null;
+  totalChf?: number | null;
   kommentar?: string;
   is_structural?: boolean;
   fire_rating?: string;
   category?: string;
+  element_count?: number;
   // Fields for Kafka data tracking
   fromKafka?: boolean;
   kafkaTimestamp?: string;
   kafkaSource?: string;
   areaSource?: string;
   area?: number;
-  [key: string]: any;
+  qtoInfo?: {
+    timestamp: string;
+  };
+  [key: string]: unknown;
 }
 
 // Types for Kafka cost message

@@ -26,7 +26,7 @@ let pingInterval: number | null = null;
 let connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED;
 
 // Event handlers
-const messageHandlers: Record<string, ((data: any) => void)[]> = {};
+const messageHandlers: Record<string, ((data: unknown) => void)[]> = {};
 const statusChangeHandlers: ((status: ConnectionStatus) => void)[] = [];
 
 /**
@@ -217,7 +217,7 @@ function startPingInterval() {
  * @param type Message type
  * @param handler Handler function
  */
-export function onMessage(type: string, handler: (data: any) => void) {
+export function onMessage(type: string, handler: (data: unknown) => void) {
   if (!messageHandlers[type]) {
     messageHandlers[type] = [];
   }
@@ -267,8 +267,8 @@ function notifyStatusChange() {
 
 // Pending request tracking
 interface PendingRequest {
-  resolve: (value: any) => void;
-  reject: (reason: any) => void;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
   timeoutId: number | null;
 }
 
@@ -282,12 +282,15 @@ let pendingRequests: Record<string, PendingRequest> = {};
  */
 export function sendRequest(
   type: string,
-  data: any = {},
+  data: unknown = {},
   timeout: number = WS_OPTIONS.messageTimeout
-): Promise<any> {
+): Promise<unknown> {
   if (!globalWs || globalWs.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error("WebSocket not connected"));
   }
+
+  // Store a reference to globalWs to ensure it's not null within the Promise scope
+  const ws = globalWs;
 
   return new Promise((resolve, reject) => {
     // Generate a unique message ID
@@ -296,11 +299,16 @@ export function sendRequest(
       .substring(2, 10)}`;
 
     // Create the message
-    const message = {
+    const baseMessage = {
       type,
       messageId,
-      ...data,
     };
+
+    // Conditionally add data properties if data is an object
+    const messageToSend =
+      typeof data === "object" && data !== null
+        ? { ...baseMessage, ...data }
+        : baseMessage;
 
     // Set up timeout
     const timeoutId = window.setTimeout(() => {
@@ -318,14 +326,16 @@ export function sendRequest(
     };
 
     // Send the message
-    try {
-      globalWs.send(JSON.stringify(message));
-    } catch (error) {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
+    if (ws) {
+      try {
+        ws.send(JSON.stringify(messageToSend));
+      } catch (error) {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        delete pendingRequests[messageId];
+        reject(error);
       }
-      delete pendingRequests[messageId];
-      reject(error);
     }
   });
 }
@@ -334,7 +344,7 @@ export function sendRequest(
  * Send cost data to the server
  * @param costData Cost data to send
  */
-export function sendCostData(costData: any): Promise<any> {
+export function sendCostData(costData: unknown): Promise<unknown> {
   console.log("Sending cost data:", costData);
 
   return sendRequest("cost_data", { data: costData }, 60000); // Longer timeout for cost data
@@ -343,7 +353,7 @@ export function sendCostData(costData: any): Promise<any> {
 /**
  * Request code matching information
  */
-export function requestCodeMatching(): Promise<any> {
+export function requestCodeMatching(): Promise<unknown> {
   return sendRequest("request_code_matching", {}, 30000);
 }
 

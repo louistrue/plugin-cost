@@ -51,10 +51,7 @@ const CostTableGrandchildRow = ({
   };
 
   // Get appropriate Menge value - use area data if available for this eBKP code
-  const getMengeValue = (
-    ebkpCode: string,
-    originalMenge: number | null | undefined
-  ) => {
+  const getMengeValue = (originalMenge: number | null | undefined) => {
     // If item has area from MongoDB
     if (item.area !== undefined) {
       return item.area;
@@ -67,7 +64,11 @@ const CostTableGrandchildRow = ({
   // Get CHF value - calculate based on area when available
   const getChfValue = () => {
     // If item has area from MongoDB
-    if (item.area !== undefined && item.kennwert !== undefined) {
+    if (
+      item.area !== undefined &&
+      item.kennwert !== null &&
+      item.kennwert !== undefined
+    ) {
       return item.area * item.kennwert;
     }
 
@@ -86,7 +87,7 @@ const CostTableGrandchildRow = ({
     if (item.area !== undefined) {
       return {
         value: item.area,
-        timestamp: item.timestamp || new Date().toISOString(),
+        timestamp: item.kafkaTimestamp || new Date().toISOString(),
         source: item.areaSource || "BIM",
       };
     }
@@ -205,10 +206,7 @@ const CostTableGrandchildRow = ({
               <Chip
                 icon={<SyncIcon />}
                 size="small"
-                label={renderNumber(
-                  getMengeValue(item.ebkp ?? "", item.menge),
-                  2
-                )}
+                label={renderNumber(getMengeValue(item.menge), 2)}
                 variant="outlined"
                 color="info"
                 sx={{
@@ -226,7 +224,7 @@ const CostTableGrandchildRow = ({
               />
             </Tooltip>
           ) : (
-            renderNumber(getMengeValue(item.ebkp ?? "", item.menge), 2)
+            renderNumber(getMengeValue(item.menge), 2)
           )}
 
           {hasQtoData(item) && <DataSourceInfo />}
@@ -260,12 +258,12 @@ const CostTableGrandchildRow = ({
       >
         <Box sx={{ display: "flex", alignItems: "center" }}>
           {hasQtoData(item) ? (
-            <Tooltip title="Gesamtkosten dieser Position" arrow>
+            <Tooltip title="Betrag aus BIM Daten" arrow>
               <Chip
                 size="small"
-                label={renderNumber(item.area * (item.kennwert || 0))}
+                label={renderNumber(getChfValue())}
                 variant="outlined"
-                color="info"
+                color="primary"
                 sx={{
                   height: 20,
                   backgroundColor: "rgba(25, 118, 210, 0.05)",

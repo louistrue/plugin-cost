@@ -231,7 +231,9 @@ export const processExcelData = (
           expanded: false,
         };
 
-        topLevelParent.children.push(secondLevelItem);
+        if (topLevelParent.children) {
+          topLevelParent.children.push(secondLevelItem);
+        }
         parentMap[ebkpCode] = secondLevelItem; // Store for third-level items
       }
     }
@@ -273,7 +275,7 @@ export const processExcelData = (
           ? String(row[kommentarHeader] || "")
           : "";
 
-        parentItem.children.push({
+        const thirdLevelItem: CostItem = {
           ebkp: ebkpCode,
           bezeichnung,
           menge,
@@ -284,7 +286,11 @@ export const processExcelData = (
           kommentar,
           children: [],
           expanded: false,
-        });
+        };
+
+        if (parentItem.children) {
+          parentItem.children.push(thirdLevelItem);
+        }
       }
     }
   }

@@ -18,6 +18,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  SelectChangeEvent,
 } from "@mui/material";
 import { useState, useEffect } from "react";
 import CostUploader from "./CostUploader/index";
@@ -109,16 +110,9 @@ const MainPage = () => {
   );
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [totalCostSum, setTotalCostSum] = useState<number>(0);
-  const [currentCostData, setCurrentCostData] = useState<CostItem[]>([]);
 
   // Get the Kafka context for WebSocket connection and MongoDB access
-  const {
-    connectionStatus,
-    mongoGetElements,
-    mongoProjectCost,
-    sendCostUpdate,
-    projectUpdates,
-  } = useKafka();
+  useKafka();
 
   // Add state for managing project data
   const [loadingElements, setLoadingElements] = useState(false);
@@ -148,24 +142,9 @@ const MainPage = () => {
     costData?: CostItem[],
     isUpdate?: boolean
   ) => {
-    // Store the most recent cost data for Kafka-based calculations
-    if (costData && costData.length > 0) {
-      setCurrentCostData(costData);
-
-      // Calculate total cost from the cost data
-      const totalCost = costData.reduce((sum, item) => {
-        // Only add the main row's totalChf value
-        return sum + (item.totalChf || 0);
-      }, 0);
-
-      // Update the total cost sum
-      setTotalCostSum(totalCost);
-    }
-
     // Handle file removal
     if (status === "Gelöscht") {
       setTotalCostSum(0); // Reset the total when a file is removed
-      setCurrentCostData([]); // Clear the current cost data
 
       // Update the file's status to "Gelöscht" instead of removing it
       setUploadedFiles((prev) =>
@@ -230,21 +209,6 @@ const MainPage = () => {
     });
   };
 
-  // Calculate the total cost from the cost data tree
-  const calculateTotalCost = (items: CostItem[]): number => {
-    return items.reduce((acc, item) => {
-      // If the item has a cost, add it
-      const itemCost = item.cost || 0;
-
-      // If the item has children, add their costs recursively
-      const childrenCost = item.children
-        ? calculateTotalCost(item.children)
-        : 0;
-
-      return acc + itemCost + childrenCost;
-    }, 0);
-  };
-
   // Function to handle template download
   const handleTemplateDownload = () => {
     // Use a direct path relative to the domain root
@@ -290,7 +254,7 @@ const MainPage = () => {
             method: "HEAD",
           });
           backendAvailable = healthResponse.ok;
-        } catch (error) {
+        } catch {
           // If health endpoint fails, try the root path
           const rootResponse = await fetch(apiBaseUrl, { method: "HEAD" });
           backendAvailable = rootResponse.ok;
@@ -406,18 +370,9 @@ const MainPage = () => {
         setLoadingElements(false);
         return [];
       }
-    } catch (error) {
-      console.error(
-        `Error fetching elements for project ${projectName}:`,
-        error
-      );
-
-      // Reset states on error
-      setCurrentElements([]);
-      setElementsByCategory({});
-      setElementsByEbkp({});
+    } catch (err) {
+      console.error("Error fetching elements:", err);
       setLoadingElements(false);
-
       return [];
     }
   };
@@ -493,131 +448,27 @@ const MainPage = () => {
   }, []);
 
   // Handle WebSocket message types
-  const handleWSMessage = (data: any) => {
-    if (data.type === "kafka_status") {
-      console.log("Kafka status:", data.status);
-    }
-    // Add handler for project_update messages
-    else if (data.type === "project_update") {
-      console.log("Received project update:", data);
+  const handleWSMessage = (data: {
+    projectId: string;
+    elements: MongoElement[];
+  }) => {
+    const projectEntry = Object.entries(projectDetailsMap).find(
+      ([, details]) => details.id === data.projectId
+    );
 
-      // Find the matching project by projectId instead of key
-      const projectEntry = Object.entries(projectDetails).find(
-        ([name, details]) => details.id === data.projectId
-      );
-
-      if (projectEntry) {
-        const [projectName, projectInfo] = projectEntry;
-
-        // Update total cost if this project matches the currently selected project
-        if (projectName === selectedProject) {
-          console.log(`Updating cost data for project: ${data.projectName}`);
-          setTotalCost(data.totalCost);
-
-          // Trigger data refresh for the selected project
-          setLoadingElements(true);
-          fetchElementsForProject(projectName)
-            .then((elements) => {
-              if (elements) {
-                // Update project stats
-                setProjectStats({
-                  totalElements: data.totalElements || elements.length,
-                  elementsWithCost: data.elementsWithCost || 0,
-                  totalCost: data.totalCost || 0,
-                  lastUpdated: data.timestamp || new Date().toISOString(),
-                });
-              }
-              setLoadingElements(false);
-            })
-            .catch((error) => {
-              console.error("Error refreshing project data:", error);
-              setLoadingElements(false);
-            });
-        } else {
-          console.log(
-            `Ignoring project update for ${data.projectName} - current project is ${selectedProject}`
-          );
-        }
+    if (projectEntry) {
+      const [projectName] = projectEntry;
+      if (projectName === selectedProject) {
+        fetchElementsForProject(projectName);
       }
-    } else if (data.category && data.ebkph) {
-      // Handle IFC element messages
-      // ... existing element handling code ...
     }
   };
 
   // Define the handler for project change
-  const handleProjectChange = (
-    event: React.ChangeEvent<{ value: unknown }>
-  ) => {
-    const newProject = event.target.value as string;
-    setSelectedProject(newProject);
-
-    // Request data for the newly selected project
-    setLoadingElements(true);
-
-    // Get project info from project details
-    const projectInfo = projectDetails[newProject];
-    const realProjectName = projectInfo?.name || newProject;
-
-    fetchElementsForProject(newProject)
-      .then((elements) => {
-        if (elements && elements.length > 0) {
-          console.log(
-            `Loaded ${elements.length} elements for project ${realProjectName}`
-          );
-
-          // Calculate project statistics
-          let elementsWithCost = 0;
-          let totalCost = 0;
-
-          elements.forEach((element) => {
-            if (element.cost && element.cost > 0) {
-              elementsWithCost++;
-              totalCost += element.cost;
-            }
-          });
-
-          // Check if we have data from projectUpdates
-          const projectId = projectInfo?.id;
-          const projectUpdate = Object.values(projectUpdates).find(
-            (update) => update.projectId === projectId
-          );
-
-          if (projectUpdate) {
-            elementsWithCost = projectUpdate.elementCount || elementsWithCost;
-            totalCost = projectUpdate.totalCost || totalCost;
-          }
-
-          // Update project stats
-          setProjectStats({
-            totalElements: elements.length,
-            elementsWithCost: elementsWithCost,
-            totalCost: totalCost,
-            lastUpdated: new Date().toISOString(),
-          });
-
-          // Update total cost
-          setTotalCost(totalCost);
-        } else {
-          // Reset stats if no elements found
-          setProjectStats({
-            totalElements: 0,
-            elementsWithCost: 0,
-            totalCost: 0,
-            lastUpdated: new Date().toISOString(),
-          });
-          setTotalCost(0);
-          setCurrentElements([]);
-          setElementsByCategory({});
-          setElementsByEbkp({});
-        }
-      })
-      .catch((error) => {
-        console.error("Error loading elements:", error);
-      })
-      .finally(() => {
-        setLoadingElements(false);
-      });
+  const handleProjectChange = (event: SelectChangeEvent<string>) => {
+    const projectName = event.target.value;
+    setSelectedProject(projectName);
+    fetchElementsForProject(projectName);
   };
 
   // Load project data on component mount
@@ -632,10 +483,10 @@ const MainPage = () => {
             let elementsWithCost = 0;
             let totalCost = 0;
 
-            elements.forEach((element) => {
-              if (element.cost && element.cost > 0) {
+            elements.forEach((element: MongoElement) => {
+              if (element.properties?.area && element.properties.area > 0) {
                 elementsWithCost++;
-                totalCost += element.cost;
+                totalCost += element.properties.area;
               }
             });
 
@@ -755,41 +606,6 @@ const MainPage = () => {
         </Box>
       </>
     );
-  };
-
-  // Send Kafka notification about cost update directly using project name
-  const sendCostUpdateNotification = async (
-    projectName: string,
-    totalCost: number,
-    elementsWithCost: number
-  ) => {
-    console.log(`Sending cost update notification for project ${projectName}`);
-    console.log(
-      `Total cost: ${totalCost}, Elements with cost: ${elementsWithCost}`
-    );
-
-    // Get project ID if available (but it's not required anymore)
-    const projectId = projectDetails[projectName]?.id || "";
-
-    // Use the sendCostUpdate function from KafkaContext with project name as the main identifier
-    const success = await sendCostUpdate(
-      projectId, // Can be empty string - backend now works with names
-      projectName, // This is now the main identifier
-      totalCost,
-      elementsWithCost
-    );
-
-    if (success) {
-      console.log(
-        `Successfully sent cost update notification for ${projectName}`
-      );
-    } else {
-      console.error(
-        `Failed to send cost update notification for ${projectName}`
-      );
-    }
-
-    return success;
   };
 
   return (

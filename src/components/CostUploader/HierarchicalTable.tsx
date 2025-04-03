@@ -5,7 +5,6 @@ import {
   Table,
   TableBody,
   Box,
-  Typography,
   Chip,
 } from "@mui/material";
 import { CostItem, MetaFile } from "./types";
@@ -39,9 +38,9 @@ interface HierarchicalTableProps {
   expandedRows: Record<string, boolean>;
   toggleRow: (code: string) => void;
   isMobile: boolean;
-  isLoading: boolean;
-  mappingMessage?: string;
   totalElements: number;
+  isLoading: boolean;
+  mappingMessage: string;
 }
 
 const HierarchicalTable = ({
@@ -49,8 +48,6 @@ const HierarchicalTable = ({
   expandedRows,
   toggleRow,
   isMobile,
-  isLoading,
-  mappingMessage,
   totalElements,
 }: HierarchicalTableProps) => {
   // Cell styles for alignment and formatting

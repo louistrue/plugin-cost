@@ -1,5 +1,21 @@
+import { CostItem } from "./CostUploader/types";
+
+interface WebSocketMessage {
+  type: string;
+  messageId: string;
+  data: CostItem[];
+  status?: string;
+  message?: string;
+}
+
+// Define window interface to include WebSocket
+interface CustomWindow extends Window {
+  ws: WebSocket;
+}
+
 // Function to send cost data to server with better timeout handling
-const sendCostDataToServer = async (costData) => {
+const sendCostDataToServer = async (costData: CostItem[]) => {
+  const ws = (window as unknown as CustomWindow).ws; // Using proper type assertion chain
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("WebSocket connection not available");
   }
@@ -9,7 +25,7 @@ const sendCostDataToServer = async (costData) => {
     .substring(2, 7)}`;
 
   // Add messageId to the data
-  const message = {
+  const message: WebSocketMessage = {
     type: "cost_data",
     messageId,
     data: costData,
@@ -21,9 +37,9 @@ const sendCostDataToServer = async (costData) => {
 
   // Wait for response with a longer timeout (30 seconds)
   const responsePromise = new Promise((resolve, reject) => {
-    const responseHandler = (event) => {
+    const responseHandler = (event: MessageEvent) => {
       try {
-        const response = JSON.parse(event.data);
+        const response: WebSocketMessage = JSON.parse(event.data);
 
         // Check if this is the response for our message
         if (
@@ -39,7 +55,7 @@ const sendCostDataToServer = async (costData) => {
             reject(new Error(response.message || "Error saving cost data"));
           }
         }
-      } catch (error) {
+      } catch {
         // Ignore parse errors from other messages
       }
     };
@@ -55,7 +71,7 @@ const sendCostDataToServer = async (costData) => {
   });
 
   // Add event listener to handle connection closure
-  const closePromise = new Promise((resolve, reject) => {
+  const closePromise = new Promise((_, reject) => {
     const closeHandler = () => {
       reject(new Error("WebSocket connection closed before response"));
     };
@@ -73,5 +89,7 @@ const sendCostDataToServer = async (costData) => {
   // Return whichever promise resolves/rejects first
   return Promise.race([responsePromise, closePromise]);
 };
+
+export default sendCostDataToServer;
 
 // Similar updates for requestCodeMatching function

@@ -6,11 +6,19 @@ import {
   useTheme,
   Typography,
 } from "@mui/material";
-import { CostUploaderProps, MetaFile, CostItem } from "./types";
+import { MetaFile, CostItem } from "./types";
 import FileDropzone from "./FileDropzone";
 import FileInfo from "./FileInfo";
 import HierarchicalTable from "./HierarchicalTable";
 import PreviewModal from "./PreviewModal";
+
+// Define the custom event type
+interface BimMappingStatusEvent extends CustomEvent {
+  detail: {
+    isMapping: boolean;
+    message?: string;
+  };
+}
 
 interface CostUploaderProps {
   onFileUploaded?: (
@@ -38,7 +46,6 @@ const CostUploader = ({
   );
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [matchedElements, setMatchedElements] = useState<any[]>([]);
 
   const toggleRow = (code: string) => {
     setExpandedRows((prev: Record<string, boolean>) => ({
@@ -65,13 +72,12 @@ const CostUploader = ({
   };
 
   // This function is called when the user confirms in the preview modal
-  const handleConfirmPreview = (matches: any[]) => {
-    setMatchedElements(matches);
+  const handleConfirmPreview = (matches: CostItem[]) => {
     setPreviewOpen(false);
     handleSendData(matches);
   };
 
-  const handleSendData = async (matches: any[] = []) => {
+  const handleSendData = async (matches: CostItem[] = []) => {
     if (!metaFile) return;
 
     // Here you would implement the API call to send the data
@@ -117,18 +123,19 @@ const CostUploader = ({
         setIsLoading(false);
       } catch (error) {
         console.error("Error sending cost data:", error);
-        setIsLoading(false);
-
-        // We still want to notify the parent of the upload, just mark it as failed
-        if (onFileUploaded && metaFile) {
+        if (onFileUploaded) {
           onFileUploaded(
             metaFile.file.name,
             new Date().toLocaleString("de-CH"),
-            `Fehler: ${error.message || "Unbekannter Fehler"}`,
-            matches,
+            `Fehler: ${
+              error instanceof Error ? error.message : "Unbekannter Fehler"
+            }`,
+            [],
             false
           );
         }
+      } finally {
+        setIsLoading(false);
       }
     } else {
       // Fallback to simulated behavior if WebSocket function not available
@@ -177,7 +184,7 @@ const CostUploader = ({
 
   // Add event listener for BIM mapping status
   useEffect(() => {
-    const handleMappingStatus = (event: CustomEvent) => {
+    const handleMappingStatus = (event: BimMappingStatusEvent) => {
       // Update both loading state and message
       if (event.detail.isMapping) {
         setIsLoading(true);
@@ -191,14 +198,14 @@ const CostUploader = ({
 
     // Add event listener
     window.addEventListener(
-      "bim-mapping-status" as any,
+      "bim-mapping-status",
       handleMappingStatus as EventListener
     );
 
     // Clean up
     return () => {
       window.removeEventListener(
-        "bim-mapping-status" as any,
+        "bim-mapping-status",
         handleMappingStatus as EventListener
       );
     };

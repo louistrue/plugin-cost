@@ -164,11 +164,10 @@ const CostTableRow = ({
 
   // Update the getMengeValue function to always show sums
   const getMengeValue = (
-    ebkpCode: string | undefined,
     originalMenge: number | null | undefined
   ): number | null | undefined => {
     // Calculate total area from children
-    const { area, elementCount } = calculateTotalsFromChildren(item);
+    const { area } = calculateTotalsFromChildren(item);
 
     // If we have a total area from children, use it
     if (area > 0) {
@@ -205,7 +204,7 @@ const CostTableRow = ({
     if (item.area !== undefined) {
       return {
         value: item.area,
-        timestamp: item.timestamp || new Date().toISOString(),
+        timestamp: item.kafkaTimestamp || new Date().toISOString(),
         source: item.areaSource || "BIM",
       };
     }
@@ -343,7 +342,7 @@ const CostTableRow = ({
               <Chip
                 icon={<SyncIcon />}
                 size="small"
-                label={renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+                label={renderNumber(getMengeValue(item.menge), 2)}
                 variant="outlined"
                 color="info"
                 sx={{
@@ -361,7 +360,7 @@ const CostTableRow = ({
             )}
             {!hasQtoData(item) && hasQtoInTree && (
               <>
-                {renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+                {renderNumber(getMengeValue(item.menge), 2)}
                 <Tooltip
                   title="Enthält BIM Daten in untergeordneten Positionen"
                   arrow
@@ -383,7 +382,7 @@ const CostTableRow = ({
             )}
             {!hasQtoData(item) &&
               !hasQtoInTree &&
-              renderNumber(getMengeValue(item.ebkp, item.menge), 2)}
+              renderNumber(getMengeValue(item.menge), 2)}
 
             {hasQtoData(item) && <DataSourceInfo />}
           </Box>

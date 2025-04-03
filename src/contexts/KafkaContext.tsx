@@ -5,6 +5,30 @@ import React, {
   useEffect,
   ReactNode,
 } from "react";
+import { CostItem } from "../components/CostUploader/types";
+
+// MongoDB element data structure
+interface MongoElement {
+  _id: string;
+  project_id: string;
+  element_type: string;
+  quantity: number;
+  properties: {
+    category?: string;
+    level?: string;
+    area?: number;
+    is_structural?: boolean;
+    is_external?: boolean;
+    ebkph?: string;
+  };
+  classification?: {
+    id: string;
+    name: string;
+    system: string;
+  };
+  created_at: string;
+  updated_at: string;
+}
 
 // Project update type
 interface ProjectUpdate {
@@ -34,6 +58,8 @@ interface KafkaContextProps {
     source?: string;
   } | null;
   formatTimestamp: (timestamp: string) => string;
+  mongoGetElements: (projectId: string) => Promise<MongoElement[]>;
+  mongoProjectCost: (projectId: string) => Promise<number>;
 }
 
 // Create the context with default values
@@ -45,6 +71,8 @@ const KafkaContext = createContext<KafkaContextProps>({
   calculateUpdatedChf: () => 0,
   getAreaData: () => null,
   formatTimestamp: (timestamp: string) => timestamp,
+  mongoGetElements: () => Promise.resolve([]),
+  mongoProjectCost: () => Promise.resolve(0),
 });
 
 // Custom hook to use the Kafka context
@@ -98,7 +126,7 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
 
     try {
       // Set up connection timeout
-      const connectionTimeout = setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         if (ws && ws.readyState !== WebSocket.OPEN) {
           console.warn("WebSocket connection timeout in KafkaContext");
           if (ws) ws.close();
@@ -111,6 +139,7 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
 
       ws.onopen = () => {
         console.log("WebSocket connection established for KafkaContext");
+        clearTimeout(timeoutId);
         setConnectionStatus("CONNECTED");
       };
 
@@ -169,6 +198,7 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
 
       // Clean up on unmount
       return () => {
+        clearTimeout(timeoutId);
         if (ws) {
           ws.close();
         }
@@ -247,19 +277,6 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
     return item.menge * item.kennwert;
   };
 
-  // Function to get area data for a code
-  const getAreaData = (
-    code: string
-  ): {
-    value?: number;
-    count?: number;
-    timestamp?: string;
-    source?: string;
-  } | null => {
-    // Since we're not using Kafka for element data anymore, return null
-    return null;
-  };
-
   // Function to format timestamp
   const formatTimestamp = (timestamp: string): string => {
     try {
@@ -272,9 +289,12 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
         minute: "2-digit",
       });
     } catch (error) {
+      console.error("Error formatting timestamp:", error);
       return timestamp;
     }
   };
+
+
 
   return (
     <KafkaContext.Provider
@@ -284,8 +304,10 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
         projectUpdates,
         replaceEbkpPlaceholders,
         calculateUpdatedChf,
-        getAreaData,
+        getAreaData: () => null,
         formatTimestamp,
+        mongoGetElements: () => Promise.resolve([]),
+        mongoProjectCost: () => Promise.resolve(0),
       }}
     >
       {children}
