@@ -23,9 +23,16 @@ export interface CostItem {
   kafkaSource?: string;
   areaSource?: string;
   area?: number;
+  // Store original values before they were updated
+  originalValues?: {
+    menge?: number | null;
+    [key: string]: unknown;
+  };
   qtoInfo?: {
     timestamp: string;
   };
+  dbElements?: number;
+  dbArea?: number;
   [key: string]: unknown;
 }
 

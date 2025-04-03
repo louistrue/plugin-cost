@@ -18,6 +18,7 @@ import {
   tableStyle,
   createCellStyles,
 } from "./styles";
+import { useEffect } from "react";
 
 // Define CellStyles interface to match the one used in CostTableRow
 interface CellStyles {
@@ -75,7 +76,7 @@ const HierarchicalTable = ({
 
     for (const item of items) {
       // Check if this item has BIM data
-      if (item.fromKafka === true) {
+      if (item.area !== undefined) {
         count++;
       }
 
@@ -87,6 +88,40 @@ const HierarchicalTable = ({
 
     return count;
   };
+
+  // Check if an item or its children have BIM data
+  const hasItemBimData = (item: CostItem): boolean => {
+    // Check if this item has direct BIM data
+    if (item.area !== undefined) {
+      return true;
+    }
+
+    // Check if any children have BIM data
+    if (item.children && item.children.length > 0) {
+      return item.children.some((child) => hasItemBimData(child));
+    }
+
+    return false;
+  };
+
+  // Auto-expand rows that have BIM data when component mounts or data changes
+  useEffect(() => {
+    const dataArray = getDataArray();
+    const itemsToExpand: string[] = [];
+
+    // Find all parent rows that have BIM data in their children
+    dataArray.forEach((item) => {
+      if (item.ebkp && hasItemBimData(item) && !expandedRows[item.ebkp]) {
+        itemsToExpand.push(item.ebkp);
+      }
+    });
+
+    // Toggle each row that needs to be expanded
+    if (itemsToExpand.length > 0) {
+      console.log(`Auto-expanding ${itemsToExpand.length} rows with BIM data`);
+      itemsToExpand.forEach((code) => toggleRow(code));
+    }
+  }, [metaFile.data, toggleRow, expandedRows]);
 
   // Get count of items with BIM data
   const bimItemsCount = countItemsWithBimData(getDataArray());

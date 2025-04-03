@@ -4,6 +4,7 @@ import React, {
   useState,
   useEffect,
   ReactNode,
+  useCallback,
 } from "react";
 import { CostItem } from "../components/CostUploader/types";
 
@@ -39,6 +40,30 @@ interface ProjectUpdate {
   timestamp: string;
 }
 
+// Add a new interface for eBKP codes
+interface EbkpCodeInfo {
+  code: string;
+  type?: string;
+  description?: string;
+}
+
+// Add types for cached project data
+interface ProjectElement {
+  id: string;
+  ebkpCode: string;
+  quantity: number;
+  area: number;
+  description?: string;
+  category?: string;
+  level?: string;
+}
+
+interface ProjectData {
+  elements: ProjectElement[];
+  ebkpMap: Record<string, ProjectElement[]>;
+  lastFetched: number;
+}
+
 // Define the context shape
 interface KafkaContextProps {
   connectionStatus: string;
@@ -60,6 +85,19 @@ interface KafkaContextProps {
   formatTimestamp: (timestamp: string) => string;
   mongoGetElements: (projectId: string) => Promise<MongoElement[]>;
   mongoProjectCost: (projectId: string) => Promise<number>;
+  sendMessage: (message: string) => void;
+  registerMessageHandler: (
+    messageId: string,
+    handler: (data: Record<string, unknown>) => void
+  ) => void;
+  availableEbkpCodes: EbkpCodeInfo[];
+  matchCodes: (codes: string[]) => EbkpCodeInfo[];
+  getProjectElements: (projectName: string) => Promise<ProjectElement[]>;
+  getElementsForEbkp: (
+    projectName: string,
+    ebkpCode: string
+  ) => Promise<ProjectElement[]>;
+  getCachedProjectData: (projectName: string) => ProjectData | null;
 }
 
 // Create the context with default values
@@ -73,6 +111,13 @@ const KafkaContext = createContext<KafkaContextProps>({
   formatTimestamp: (timestamp: string) => timestamp,
   mongoGetElements: () => Promise.resolve([]),
   mongoProjectCost: () => Promise.resolve(0),
+  sendMessage: () => {},
+  registerMessageHandler: () => {},
+  availableEbkpCodes: [],
+  matchCodes: () => [],
+  getProjectElements: () => Promise.resolve([]),
+  getElementsForEbkp: () => Promise.resolve([]),
+  getCachedProjectData: () => null,
 });
 
 // Custom hook to use the Kafka context
@@ -91,6 +136,20 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
   >({});
   const [connectionStatus, setConnectionStatus] =
     useState<string>("CONNECTING");
+  const [websocket, setWebsocket] = useState<WebSocket | null>(null);
+  const [availableEbkpCodes, setAvailableEbkpCodes] = useState<EbkpCodeInfo[]>(
+    []
+  );
+
+  // Add state for project elements cache
+  const [projectDataCache, setProjectDataCache] = useState<
+    Record<string, ProjectData>
+  >({});
+
+  // Message response handlers - store callbacks for messages with specific messageIds
+  const [messageHandlers] = useState<
+    Record<string, (data: Record<string, unknown>) => void>
+  >({});
 
   // Connect to WebSocket and listen for messages
   useEffect(() => {
@@ -136,28 +195,72 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
 
       // Initialize WebSocket
       ws = new WebSocket(wsUrl);
+      setWebsocket(ws);
 
       ws.onopen = () => {
         console.log("WebSocket connection established for KafkaContext");
         clearTimeout(timeoutId);
         setConnectionStatus("CONNECTED");
+
+        // Request available eBKP codes after connection is established
+        requestAvailableEbkpCodes(ws);
       };
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
+          const data = JSON.parse(event.data) as Record<string, unknown>;
+
+          // Handle receiving eBKP codes list from server
+          if (
+            data.type === "available_ebkp_codes" &&
+            Array.isArray(data.codes)
+          ) {
+            console.log(
+              "Received available eBKP codes from server:",
+              data.codes
+            );
+
+            // Transform the codes into our EbkpCodeInfo format
+            const codeObjects: EbkpCodeInfo[] = data.codes.map(
+              (code: string) => ({
+                code,
+                type: code.split(".")[0], // Extract main type like C1, C2, etc.
+              })
+            );
+
+            setAvailableEbkpCodes(codeObjects);
+            return;
+          }
+
+          // Check if this message has a messageId that has a registered handler
+          if (
+            typeof data.messageId === "string" &&
+            messageHandlers[data.messageId]
+          ) {
+            // Call the registered handler for this message ID
+            messageHandlers[data.messageId](data);
+            // Clean up the handler after use
+            delete messageHandlers[data.messageId];
+            return;
+          }
 
           // Skip connection status messages
           if (data.type === "connection") {
             // Update connection status if included in the message
-            if (data.kafka) {
+            if (typeof data.kafka === "string") {
               setConnectionStatus(data.kafka);
             }
             return;
           }
 
           // Handle project update notifications
-          if (data.type === "project_update") {
+          if (
+            data.type === "project_update" &&
+            typeof data.projectName === "string" &&
+            typeof data.projectId === "string" &&
+            typeof data.totalElements === "number" &&
+            typeof data.timestamp === "string"
+          ) {
             console.log(
               "KafkaContext: Received project update notification:",
               data
@@ -166,12 +269,15 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
             // Store project update information
             setProjectUpdates((prev) => ({
               ...prev,
-              [data.projectName]: {
-                projectId: data.projectId,
-                projectName: data.projectName,
-                elementCount: data.totalElements,
-                totalCost: data.totalCost,
-                timestamp: data.timestamp,
+              [data.projectName as string]: {
+                projectId: data.projectId as string,
+                projectName: data.projectName as string,
+                elementCount: data.totalElements as number,
+                totalCost:
+                  typeof data.totalCost === "number"
+                    ? data.totalCost
+                    : undefined,
+                timestamp: data.timestamp as string,
               },
             }));
 
@@ -208,7 +314,7 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
       setConnectionStatus("DISCONNECTED");
       return () => {}; // Empty cleanup function
     }
-  }, []);
+  }, [messageHandlers]); // Add messageHandlers as a dependency
 
   // Send cost update to Kafka via WebSocket server
   const sendCostUpdate = async (
@@ -294,7 +400,253 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
     }
   };
 
+  // Function to send a message via WebSocket
+  const sendMessage = (message: string): void => {
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+      console.error("Cannot send message: WebSocket is not connected");
+      throw new Error("WebSocket is not connected");
+    }
 
+    try {
+      websocket.send(message);
+
+      // Check if the message has a messageId
+      const parsedMessage = JSON.parse(message);
+      if (parsedMessage.messageId) {
+        console.log(`Sent message with ID: ${parsedMessage.messageId}`);
+      }
+    } catch (error) {
+      console.error("Error sending WebSocket message:", error);
+      throw error;
+    }
+  };
+
+  // Function to register a message handler for a specific messageId
+  const registerMessageHandler = (
+    messageId: string,
+    handler: (data: Record<string, unknown>) => void
+  ): void => {
+    messageHandlers[messageId] = handler;
+    console.log(`Registered handler for message ID: ${messageId}`);
+  };
+
+  // Function to request available eBKP codes from the server
+  const requestAvailableEbkpCodes = (ws: WebSocket | null) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.error("Cannot request eBKP codes: WebSocket is not connected");
+      return;
+    }
+
+    try {
+      const message = {
+        type: "get_available_ebkp_codes",
+        timestamp: new Date().toISOString(),
+        messageId: `ebkp_codes_${Date.now()}`,
+      };
+      ws.send(JSON.stringify(message));
+      console.log("Requested available eBKP codes from server");
+    } catch (error) {
+      console.error("Error requesting eBKP codes:", error);
+    }
+  };
+
+  // Function to match codes with available eBKP codes
+  const matchCodes = (codes: string[]): EbkpCodeInfo[] => {
+    if (!codes || !codes.length || !availableEbkpCodes.length) {
+      return [];
+    }
+
+    // Normalize input codes
+    const normalizedCodes = codes.map((code) => normalizeCode(code));
+
+    // Find matching codes from available codes
+    const matches = availableEbkpCodes.filter((codeInfo) =>
+      normalizedCodes.some((code) => code === codeInfo.code)
+    );
+
+    console.log(`Matched ${matches.length} out of ${codes.length} codes`);
+    return matches;
+  };
+
+  // Helper function to normalize a code (similar to backend)
+  const normalizeCode = (code: string): string => {
+    // Remove whitespace, convert to uppercase
+    return code.trim().toUpperCase();
+  };
+
+  // Function to fetch and cache project elements
+  const fetchProjectElements = useCallback(
+    async (projectName: string): Promise<ProjectElement[]> => {
+      if (!backendUrl) {
+        console.error(
+          "Cannot fetch project elements: Backend URL not available"
+        );
+        return [];
+      }
+
+      // Check if we have cached data that's less than 5 minutes old
+      const cachedData = projectDataCache[projectName];
+      const now = Date.now();
+      if (cachedData && now - cachedData.lastFetched < 5 * 60 * 1000) {
+        console.log(`Using cached project data for ${projectName}`);
+        return cachedData.elements;
+      }
+
+      try {
+        console.log(`Fetching elements for project: ${projectName}`);
+        const response = await fetch(
+          `${backendUrl}/project-elements/${encodeURIComponent(projectName)}`
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to fetch project elements: ${response.status} ${response.statusText}`
+          );
+        }
+
+        const elements = await response.json();
+        console.log(
+          `Received ${elements.length} elements for project ${projectName}`
+        );
+
+        // Transform to our simplified structure
+        const transformedElements: ProjectElement[] = elements
+          .map((element: Record<string, unknown>) => {
+            // Extract eBKP code from various possible locations
+            const properties = element.properties as
+              | Record<string, any>
+              | undefined;
+            const ebkpCode =
+              properties?.classification?.id ||
+              properties?.ebkph ||
+              (element.ebkph as string) ||
+              (element.ebkp_code as string) ||
+              (element.ebkp as string) ||
+              "";
+
+            // Extract quantity/area
+            const quantity = parseFloat(
+              (
+                (element.quantity as string) ||
+                (element.area as string) ||
+                0
+              ).toString()
+            );
+
+            return {
+              id: (element._id as string) || (element.id as string) || "",
+              ebkpCode: ebkpCode.toUpperCase().trim(),
+              quantity: quantity,
+              area: quantity, // Use same value for area
+              description: properties?.description || "",
+              category:
+                (element.category as string) || properties?.category || "",
+              level: (element.level as string) || properties?.level || "",
+            };
+          })
+          .filter((e: ProjectElement) => e.ebkpCode && e.ebkpCode !== "");
+
+        // Build a map for quick access by eBKP code
+        const ebkpMap: Record<string, ProjectElement[]> = {};
+        transformedElements.forEach((element) => {
+          const normalizedCode = normalizeEbkpCode(element.ebkpCode);
+          if (!ebkpMap[normalizedCode]) {
+            ebkpMap[normalizedCode] = [];
+          }
+          ebkpMap[normalizedCode].push(element);
+        });
+
+        // Store in cache
+        const projectData: ProjectData = {
+          elements: transformedElements,
+          ebkpMap,
+          lastFetched: now,
+        };
+
+        setProjectDataCache((prev) => ({
+          ...prev,
+          [projectName]: projectData,
+        }));
+
+        console.log(
+          `Cached ${transformedElements.length} elements for project ${projectName}`
+        );
+        return transformedElements;
+      } catch (error) {
+        console.error(
+          `Error fetching project elements: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        return [];
+      }
+    },
+    [backendUrl, projectDataCache]
+  );
+
+  // Function to get elements for a specific eBKP code
+  const getElementsForEbkp = useCallback(
+    async (
+      projectName: string,
+      ebkpCode: string
+    ): Promise<ProjectElement[]> => {
+      // Normalize the eBKP code for consistency
+      const normalizedCode = normalizeEbkpCode(ebkpCode);
+
+      // Ensure we have cached data
+      let cachedData = projectDataCache[projectName];
+      if (!cachedData) {
+        await fetchProjectElements(projectName);
+        cachedData = projectDataCache[projectName];
+      }
+
+      if (!cachedData) {
+        return [];
+      }
+
+      // Return elements with the matching code
+      return cachedData.ebkpMap[normalizedCode] || [];
+    },
+    [fetchProjectElements, projectDataCache]
+  );
+
+  // Helper function to normalize eBKP codes
+  const normalizeEbkpCode = (code: string): string => {
+    if (!code) return "";
+
+    // Convert to uppercase and trim
+    const upperCode = code.toUpperCase().trim();
+
+    // Remove spaces
+    let normalized = upperCode.replace(/\s+/g, "");
+
+    // Normalize format: C01.01 -> C1.1
+    normalized = normalized.replace(/([A-Z])0*(\d+)\.0*(\d+)/g, "$1$2.$3");
+
+    // Normalize format without dots: C01 -> C1
+    normalized = normalized.replace(/([A-Z])0*(\d+)$/g, "$1$2");
+
+    // Handle case with missing number: C.1 -> C1
+    normalized = normalized.replace(/([A-Z])\.(\d+)/g, "$1$2");
+
+    return normalized;
+  };
+
+  // Function to get all project elements
+  const getProjectElements = useCallback(
+    async (projectName: string): Promise<ProjectElement[]> => {
+      return await fetchProjectElements(projectName);
+    },
+    [fetchProjectElements]
+  );
+
+  // Function to get cached project data
+  const getCachedProjectData = useCallback(
+    (projectName: string): ProjectData | null => {
+      return projectDataCache[projectName] || null;
+    },
+    [projectDataCache]
+  );
 
   return (
     <KafkaContext.Provider
@@ -308,6 +660,13 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
         formatTimestamp,
         mongoGetElements: () => Promise.resolve([]),
         mongoProjectCost: () => Promise.resolve(0),
+        sendMessage,
+        registerMessageHandler,
+        availableEbkpCodes,
+        matchCodes,
+        getProjectElements,
+        getElementsForEbkp,
+        getCachedProjectData,
       }}
     >
       {children}

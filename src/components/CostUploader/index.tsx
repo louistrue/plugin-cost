@@ -71,97 +71,17 @@ const CostUploader = ({
     setPreviewOpen(true);
   };
 
-  // This function is called when the user confirms in the preview modal
-  const handleConfirmPreview = (matches: CostItem[]) => {
-    setPreviewOpen(false);
-    handleSendData(matches);
-  };
-
-  const handleSendData = async (matches: CostItem[] = []) => {
-    if (!metaFile) return;
-
-    // Here you would implement the API call to send the data
-    setIsLoading(true);
-
-    // Use the global requestSendCostData function if available
-    if (
-      typeof window.sendCostDataToServer === "function" &&
-      matches.length > 0
-    ) {
-      try {
-        // Send the matched elements to the server
-        const fileName = metaFile.file.name;
-        const currentDate = new Date().toISOString();
-
-        // Format the data for Kafka
-        const costData = {
-          project: "excel-import",
-          filename: fileName,
-          timestamp: currentDate,
-          data: matches,
-          replaceExisting: true,
-        };
-
-        console.log("Sending cost data to server:", costData);
-
-        const result = await window.sendCostDataToServer(costData);
-        console.log("Server response:", result);
-
-        // Notify parent component of successful save
-        if (onFileUploaded) {
-          onFileUploaded(
-            fileName,
-            new Date().toLocaleString("de-CH"),
-            "Erfolgreich gespeichert",
-            matches,
-            true
-          );
-        }
-
-        // Clear the file after successful processing
-        setMetaFile(null);
-        setIsLoading(false);
-      } catch (error) {
-        console.error("Error sending cost data:", error);
-        if (onFileUploaded) {
-          onFileUploaded(
-            metaFile.file.name,
-            new Date().toLocaleString("de-CH"),
-            `Fehler: ${
-              error instanceof Error ? error.message : "Unbekannter Fehler"
-            }`,
-            [],
-            false
-          );
-        }
-      } finally {
-        setIsLoading(false);
-      }
-    } else {
-      // Fallback to simulated behavior if WebSocket function not available
-      setTimeout(() => {
-        const fileName = metaFile.file.name;
-        const currentDate = new Date().toLocaleString("de-CH");
-        const status = "Erfolgreich";
-        const isUpdate = true;
-
-        // Call the onFileUploaded prop if provided
-        if (onFileUploaded) {
-          // Extract data array based on format
-          const costData =
-            matches.length > 0
-              ? matches
-              : Array.isArray(metaFile.data)
-              ? metaFile.data
-              : metaFile.data.data;
-
-          onFileUploaded(fileName, currentDate, status, costData, isUpdate);
-        }
-
-        setMetaFile(null);
-        setIsLoading(false);
-      }, 1500);
+  const handleConfirmPreview = () => {
+    if (metaFile && onFileUploaded) {
+      const fileName = metaFile.file.name;
+      const currentDate = new Date().toLocaleString("de-CH");
+      const status = "Bestätigt";
+      const costData = Array.isArray(metaFile.data)
+        ? metaFile.data
+        : metaFile.data.data;
+      onFileUploaded(fileName, currentDate, status, costData, true);
     }
+    setPreviewOpen(false);
   };
 
   const handleFileUploaded = (newMetaFile: MetaFile) => {

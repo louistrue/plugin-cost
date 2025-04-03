@@ -619,7 +619,6 @@ const MainPage = () => {
         }}
       >
         <Typography variant="h4" component="h1">
-          Kostenplanung
         </Typography>
       </Box>
 

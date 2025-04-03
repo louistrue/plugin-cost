@@ -585,9 +585,90 @@ wss.on("connection", async (ws, req) => {
       const data = JSON.parse(message);
       console.log(`Received message from client ${clientId}:`, message);
 
-      if (data.type === "request_code_matching") {
+      // Handle request for available eBKP codes
+      if (data.type === "get_available_ebkp_codes") {
+        console.log("Received request for available eBKP codes");
+
         try {
-          console.log(`Client ${clientId} requested code matching info`);
+          // Get all unique eBKP codes from elements and unit costs
+          const allCodes = new Set([
+            ...Object.keys(ifcElementsByEbkph),
+            ...Object.keys(unitCostsByEbkph),
+          ]);
+
+          // Create a more detailed response with code information
+          const codeDetails = Array.from(allCodes).map((code) => {
+            // Count elements with this code
+            const elements = ifcElementsByEbkph[code] || [];
+            const elementCount = elements.length;
+
+            // Check if we have costs for this code
+            const hasCost = unitCostsByEbkph[code] !== undefined;
+
+            // Calculate total area for this code
+            const totalArea = elements.reduce((sum, element) => {
+              return sum + parseFloat(element.quantity || element.area || 0);
+            }, 0);
+
+            return {
+              code,
+              elementCount,
+              hasCost,
+              totalArea,
+              // Add the original format for troubleshooting
+              originalFormat: code,
+            };
+          });
+
+          // Send back as an array with detailed info
+          const response = {
+            type: "available_ebkp_codes",
+            messageId: data.messageId,
+            codes: Array.from(allCodes),
+            codeDetails,
+            timestamp: new Date().toISOString(),
+          };
+
+          ws.send(JSON.stringify(response));
+          console.log(
+            `Sent ${allCodes.size} available eBKP codes to client with details`
+          );
+          return;
+        } catch (error) {
+          console.error(
+            "Error processing available eBKP codes request:",
+            error
+          );
+          ws.send(
+            JSON.stringify({
+              type: "available_ebkp_codes",
+              messageId: data.messageId,
+              error: "Failed to get eBKP codes: " + error.message,
+              codes: [],
+              timestamp: new Date().toISOString(),
+            })
+          );
+        }
+        return;
+      }
+
+      // Handle request for code matching
+      if (data.type === "request_code_matching") {
+        console.log(
+          `Received code matching request with ${
+            data.codes?.length || 0
+          } codes from client ${clientId}`
+        );
+
+        try {
+          // Log input details
+          if (data.codes?.length > 0) {
+            console.log(
+              `Sample codes: ${data.codes.slice(0, 5).join(", ")}...`
+            );
+          } else {
+            console.log("WARNING: No codes provided in request");
+          }
 
           // Force MongoDB load if requested
           if (data.debug?.forceMongoDB && config.mongodb.enabled) {
@@ -599,43 +680,86 @@ wss.on("connection", async (ws, req) => {
           }
 
           // Get codes from the message
-          const excelCodes = data.debug?.excelCodes || [];
-          const normalizedCodes =
-            data.debug?.normalizedExcelCodes?.map((nc) => nc.normalized) || [];
+          const excelCodes = data.codes || [];
+          console.log(`Processing ${excelCodes.length} excel codes`);
 
-          // Process matches (will use cache if available)
-          const matches = await batchProcessCodeMatches(
-            Object.values(ifcElementsByEbkph).flat(),
-            unitCostsByEbkph,
-            data.debug?.forceRefresh || false
+          // Some basic validation
+          if (!excelCodes.length) {
+            console.log("No codes to process, sending empty response");
+            ws.send(
+              JSON.stringify({
+                type: "code_matching_info",
+                messageId: data.messageId,
+                status: "success",
+                matchingCodes: [],
+                matches: [],
+                matchCount: 0,
+                timestamp: new Date().toISOString(),
+              })
+            );
+            return;
+          }
+
+          // Normalize the codes for better matching
+          const normalizedCodes = excelCodes.map((code) =>
+            normalizeEbkpCode(code)
+          );
+          console.log(
+            `Normalized ${normalizedCodes.length} codes for matching`
           );
 
-          // Send back all matches in a single message
-          ws.send(
-            JSON.stringify({
+          try {
+            // Get elements and unit costs
+            const elementsList = Object.values(ifcElementsByEbkph).flat();
+            console.log(
+              `Processing matches using ${elementsList.length} elements and ${
+                Object.keys(unitCostsByEbkph).length
+              } cost codes`
+            );
+
+            // Process matches (will use cache if available)
+            const matches = await batchProcessCodeMatches(
+              elementsList,
+              unitCostsByEbkph,
+              data.debug?.forceRefresh || false
+            );
+            console.log(`Found ${matches.length} matches`);
+
+            // Send back all matches in a single message with explicit status field
+            const response = {
               type: "code_matching_info",
               messageId: data.messageId,
+              status: "success",
               excelCodeCount: excelCodes.length,
               ifcCodeCount: Object.keys(ifcElementsByEbkph).length,
-              matches: matches,
-              matchCount: matches.length,
+              matchingCodes: matches ? matches : [], // Always send an array even if empty
+              matches: matches ? matches : [], // Send in both formats for compatibility
+              matchCount: matches ? matches.length : 0,
               timestamp: new Date().toISOString(),
               isCached: !data.debug?.forceRefresh && cachedMatches !== null,
-              debug: {
-                serverExcelCodes: Object.keys(unitCostsByEbkph),
-                serverIfcCodes: Object.keys(ifcElementsByEbkph),
-                processedCodes: Array.from(processedCodes),
-                sampleElement:
-                  Object.keys(ifcElementsByEbkph).length > 0
-                    ? JSON.stringify(
-                        ifcElementsByEbkph[
-                          Object.keys(ifcElementsByEbkph)[0]
-                        ][0]
-                      )
-                    : null,
-              },
-            })
-          );
+            };
+
+            console.log(
+              `Sending response for code matching: ${
+                matches ? matches.length : 0
+              } matches found`
+            );
+            ws.send(JSON.stringify(response));
+          } catch (error) {
+            console.error("Error processing matches:", error);
+            ws.send(
+              JSON.stringify({
+                type: "code_matching_info",
+                messageId: data.messageId,
+                status: "error",
+                message: `Error processing matches: ${error.message}`,
+                timestamp: new Date().toISOString(),
+                matchingCodes: [], // Add empty arrays to ensure client doesn't crash
+                matches: [],
+                matchCount: 0,
+              })
+            );
+          }
         } catch (error) {
           console.error("Error in code matching request:", error);
           ws.send(
@@ -644,9 +768,14 @@ wss.on("connection", async (ws, req) => {
               messageId: data.messageId,
               status: "error",
               message: error.message,
+              timestamp: new Date().toISOString(),
+              matchingCodes: [], // Add empty arrays to ensure client doesn't crash
+              matches: [],
+              matchCount: 0,
             })
           );
         }
+        return;
       } else if (data.type === "ping") {
         console.log(`Received ping from client ${clientId}, sending pong`);
         ws.send(JSON.stringify({ type: "pong" }));
@@ -1452,9 +1581,28 @@ async function batchProcessCodeMatches(
     }
   }
 
-  console.log("Processing new matches");
+  console.log(
+    `Processing new matches with ${elements.length} elements and ${
+      Object.keys(unitCosts).length
+    } unit costs`
+  );
+
+  // Quick check if both arrays are empty
+  if (elements.length === 0 || Object.keys(unitCosts).length === 0) {
+    console.log(
+      "Either elements or unit costs are empty, returning empty array"
+    );
+    return [];
+  }
+
   const matches = [];
   const processedCodes = new Set();
+
+  // Log some sample elements to help debug
+  if (elements.length > 0) {
+    console.log("Sample elements for debugging:");
+    console.log(JSON.stringify(elements.slice(0, 2), null, 2));
+  }
 
   // Create a map of normalized codes for faster lookup
   const normalizedCostCodes = new Map();
@@ -1463,21 +1611,38 @@ async function batchProcessCodeMatches(
     normalizedCostCodes.set(normalizedCode, { code, costInfo });
   });
 
+  console.log(`Normalized ${normalizedCostCodes.size} cost codes for lookup`);
+
   // Process all elements at once
   for (const element of elements) {
-    const ebkpCode =
-      element.properties?.classification?.id ||
-      element.ebkph ||
-      element.ebkp_code;
+    // Try different properties that might contain EBKP codes
+    let ebkpCode = null;
+
+    // First try direct properties
+    if (element.properties?.classification?.id) {
+      ebkpCode = element.properties.classification.id;
+    } else if (element.properties?.ebkph) {
+      ebkpCode = element.properties.ebkph;
+    } else if (element.ebkph) {
+      ebkpCode = element.ebkph;
+    } else if (element.ebkp_code) {
+      ebkpCode = element.ebkp_code;
+    } else if (element.ebkp) {
+      ebkpCode = element.ebkp;
+    }
 
     if (!ebkpCode || processedCodes.has(ebkpCode)) continue;
 
     const normalizedCode = normalizeEbkpCode(ebkpCode);
+    console.log(
+      `Processing element code: ${ebkpCode} (normalized: ${normalizedCode})`
+    );
+
     const match = findBestEbkphMatch(normalizedCode);
 
     if (match) {
       const costInfo = match.costInfo;
-      const area = parseFloat(element.quantity || 0);
+      const area = parseFloat(element.quantity || element.area || 0);
       const costUnit = costInfo.cost_unit || 0;
       const totalCost = costUnit * (area || 1);
 
@@ -1497,6 +1662,10 @@ async function batchProcessCodeMatches(
       processedCodes.add(ebkpCode);
     }
   }
+
+  console.log(
+    `Found ${matches.length} matches from ${elements.length} elements`
+  );
 
   // Cache the results
   cachedMatches = matches;
