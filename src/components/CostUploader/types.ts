@@ -33,6 +33,15 @@ export interface CostItem {
   };
   dbElements?: number;
   dbArea?: number;
+  // Store original item for reference (used in PreviewModal)
+  originalItem?: {
+    ebkp?: string;
+    bezeichnung?: string;
+    kennwert?: number | null;
+    menge?: number | null;
+    einheit?: string;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 

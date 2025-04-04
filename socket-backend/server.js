@@ -232,48 +232,104 @@ const server = http.createServer((req, res) => {
     );
 
     // Try to get project cost data directly using project name
-    getAllElementsForProject(projectName)
-      .then(async (elements) => {
-        // Get cost data for each element
-        const elementsWithCost = [];
-        let totalCost = 0;
+    (async () => {
+      try {
+        // First find the project ID
+        const qtoProject = await qtoDb.collection("projects").findOne({
+          name: { $regex: new RegExp(`^${projectName}$`, "i") },
+        });
 
-        // Check if there are cost data entries for elements
-        for (const element of elements) {
-          try {
-            const costData = await getCostDataForElement(
-              element._id.toString()
-            );
-            if (costData) {
-              elementsWithCost.push({
-                ...element,
-                cost: costData,
-              });
-              totalCost += costData.total_cost || 0;
+        if (!qtoProject) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({ error: `Project ${projectName} not found` })
+          );
+          return;
+        }
+
+        const projectId = qtoProject._id;
+        console.log(`Found project with ID: ${projectId}`);
+
+        // First check if we have a cost summary
+        const existingSummary = await costDb
+          .collection("costSummaries")
+          .findOne({
+            project_id: projectId,
+          });
+
+        // If a summary exists, update it to ensure it's current
+        if (existingSummary) {
+          console.log(`Found existing cost summary for project ${projectName}`);
+        }
+
+        // Always recalculate to ensure up-to-date data
+        const costSummary = await updateProjectCostSummary(projectId);
+
+        if (costSummary.error) {
+          throw new Error(costSummary.error);
+        }
+
+        // If we have elements count but zero cost, double-check elements directly
+        if (
+          costSummary.elements_count > 0 &&
+          costSummary.total_from_elements === 0
+        ) {
+          console.log(
+            `Elements found (${costSummary.elements_count}) but zero cost - verifying...`
+          );
+
+          // Get all cost elements and manually calculate total
+          const costElements = await costDb
+            .collection("costElements")
+            .find({ project_id: projectId })
+            .toArray();
+
+          if (costElements.length > 0) {
+            // Create a map to avoid double-counting
+            const processedIds = new Set();
+            let manualTotal = 0;
+
+            costElements.forEach((element) => {
+              const id = element._id.toString();
+              if (!processedIds.has(id) && element.total_cost) {
+                processedIds.add(id);
+                manualTotal += element.total_cost;
+              }
+            });
+
+            if (manualTotal > 0) {
+              console.log(
+                `Manual calculation found total cost: ${manualTotal}`
+              );
+              costSummary.total_from_elements = manualTotal;
+
+              // Update the summary with the corrected total
+              await costDb.collection("costSummaries").updateOne(
+                { project_id: projectId },
+                {
+                  $set: {
+                    total_from_elements: manualTotal,
+                    updated_at: new Date(),
+                  },
+                }
+              );
             }
-          } catch (error) {
-            console.error(
-              `Error getting cost data for element ${element._id}:`,
-              error
-            );
           }
         }
 
-        const costSummary = {
-          project_id: elements.length > 0 ? elements[0].project_id : null,
-          projectName,
-          totalElements: elements.length,
-          elementsWithCost: elementsWithCost.length,
-          totalCost,
-          created_at: new Date().toISOString(),
-          breakdown: [],
-          // In a real implementation, you would add a breakdown by categories or eBKP codes
+        // Return only the specified fields
+        const simplifiedSummary = {
+          created_at: costSummary.created_at,
+          elements_count: costSummary.elements_count,
+          cost_data_count: costSummary.cost_data_count,
+          total_from_cost_data: costSummary.total_from_cost_data,
+          total_from_elements: costSummary.total_from_elements,
+          updated_at: costSummary.updated_at,
         };
 
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(costSummary));
-      })
-      .catch((error) => {
+        res.end(JSON.stringify(simplifiedSummary));
+      } catch (error) {
         console.error(
           `Error getting cost data for project ${projectName}:`,
           error
@@ -282,7 +338,8 @@ const server = http.createServer((req, res) => {
         res.end(
           JSON.stringify({ error: `Failed to get cost data: ${error.message}` })
         );
-      });
+      }
+    })();
   }
   // Get element cost data (/element-cost/:elementId)
   else if (req.url.startsWith("/element-cost/")) {
@@ -585,6 +642,108 @@ wss.on("connection", async (ws, req) => {
       const data = JSON.parse(message);
       console.log(`Received message from client ${clientId}:`, message);
 
+      // Handle delete project data request - new handler
+      if (data.type === "delete_project_data") {
+        const { projectName } = data.payload || {};
+        const messageId = data.messageId;
+
+        if (!projectName) {
+          console.error("Invalid delete_project_data payload:", data.payload);
+          ws.send(
+            JSON.stringify({
+              type: "delete_project_data_response",
+              messageId,
+              status: "error",
+              message: "Invalid payload. Missing projectName.",
+            })
+          );
+          return;
+        }
+
+        console.log(
+          `Received request to delete cost data for project '${projectName}'`
+        );
+
+        try {
+          // Find the project ID first
+          const qtoProject = await qtoDb.collection("projects").findOne({
+            name: { $regex: new RegExp(`^${projectName}$`, "i") },
+          });
+
+          if (!qtoProject) {
+            // Project not found but don't treat it as an error
+            console.log(`Project '${projectName}' not found for deletion`);
+            ws.send(
+              JSON.stringify({
+                type: "delete_project_data_response",
+                messageId,
+                status: "success",
+                message: `Project '${projectName}' not found, nothing to delete`,
+                deletedCount: 0,
+              })
+            );
+            return;
+          }
+
+          const projectId = qtoProject._id;
+
+          // Delete all cost data for this project
+          const costDataResult = await costDb
+            .collection("costData")
+            .deleteMany({ project_id: projectId });
+
+          // Delete cost elements as well
+          const costElementsResult = await costDb
+            .collection("costElements")
+            .deleteMany({ project_id: projectId });
+
+          // Delete cost summaries
+          const costSummariesResult = await costDb
+            .collection("costSummaries")
+            .deleteMany({ project_id: projectId });
+
+          const totalDeleted =
+            costDataResult.deletedCount +
+            costElementsResult.deletedCount +
+            costSummariesResult.deletedCount;
+
+          console.log(
+            `Deleted cost data for project '${projectName}': ${costDataResult.deletedCount} costData, ${costElementsResult.deletedCount} costElements, ${costSummariesResult.deletedCount} summaries`
+          );
+
+          // Send success response
+          ws.send(
+            JSON.stringify({
+              type: "delete_project_data_response",
+              messageId,
+              status: "success",
+              message: `Successfully deleted ${totalDeleted} cost data entries`,
+              deletedCount: totalDeleted,
+              details: {
+                costData: costDataResult.deletedCount,
+                costElements: costElementsResult.deletedCount,
+                costSummaries: costSummariesResult.deletedCount,
+              },
+            })
+          );
+        } catch (error) {
+          console.error(
+            `Error deleting cost data for project '${projectName}':`,
+            error
+          );
+          // Send error response
+          ws.send(
+            JSON.stringify({
+              type: "delete_project_data_response",
+              messageId,
+              status: "error",
+              message: `Failed to delete cost data: ${error.message}`,
+            })
+          );
+        }
+        return; // Ensure we don't fall through
+      }
+
       // Handle request for available eBKP codes
       if (data.type === "get_available_ebkp_codes") {
         console.log("Received request for available eBKP codes");
@@ -776,6 +935,336 @@ wss.on("connection", async (ws, req) => {
           );
         }
         return;
+      }
+      // Handle request to save cost data batch
+      else if (data.type === "save_cost_batch") {
+        const { projectName, costItems } = data.payload || {};
+        const messageId = data.messageId;
+
+        if (!projectName || !costItems || costItems.length === 0) {
+          console.error("Invalid save_cost_batch payload:", data.payload);
+          ws.send(
+            JSON.stringify({
+              type: "save_cost_batch_response",
+              messageId,
+              status: "error",
+              message: "Invalid payload. Missing projectName or costItems.",
+            })
+          );
+          return;
+        }
+
+        console.log(
+          `Received save_cost_batch for project '${projectName}' with ${costItems.length} items.`
+        );
+
+        try {
+          // Call the MongoDB function to save the batch directly
+          // This function already handles creating/finding the project and elements
+          const result = await saveCostDataBatch(costItems, projectName);
+          console.log(
+            `Batch save result for project '${projectName}':`,
+            result
+          );
+
+          // Send success response
+          ws.send(
+            JSON.stringify({
+              type: "save_cost_batch_response",
+              messageId,
+              status: "success",
+              message: `Successfully saved ${
+                result.insertedCount || 0
+              } cost items.`,
+              insertedCount: result.insertedCount || 0,
+            })
+          );
+        } catch (error) {
+          console.error(
+            `Error saving cost batch for project '${projectName}':`,
+            error
+          );
+          // Send error response
+          ws.send(
+            JSON.stringify({
+              type: "save_cost_batch_response",
+              messageId,
+              status: "error",
+              message: `Failed to save cost data: ${error.message}`,
+            })
+          );
+        }
+        return; // Ensure we don't fall through
+      }
+      // Handle request to save cost data batch with full Excel data
+      else if (data.type === "save_cost_batch_full") {
+        const { projectName, matchedItems, allExcelItems } = data.payload || {};
+        const messageId = data.messageId;
+
+        if (!projectName || !matchedItems || !allExcelItems) {
+          console.error("Invalid save_cost_batch_full payload:", data.payload);
+          ws.send(
+            JSON.stringify({
+              type: "save_cost_batch_full_response",
+              messageId,
+              status: "error",
+              message:
+                "Invalid payload. Missing projectName, matchedItems, or allExcelItems.",
+            })
+          );
+          return;
+        }
+
+        console.log(
+          `Received save_cost_batch_full for project '${projectName}' with ${matchedItems.length} matched items and ${allExcelItems.length} total Excel items.`
+        );
+
+        try {
+          // Create a custom handler function that will pass both matched items and all Excel items
+          const saveFullBatchResult = async (
+            matchedItems,
+            allExcelItems,
+            projectName
+          ) => {
+            // First ensure we're connected to the database
+            const { costDb, qtoDb } = await connectToMongoDB();
+
+            // Step 1: Find or create the project
+            let projectId;
+
+            const qtoProject = await qtoDb.collection("projects").findOne({
+              name: { $regex: new RegExp(`^${projectName}$`, "i") },
+            });
+
+            if (qtoProject) {
+              projectId = qtoProject._id;
+              console.log(`Found existing QTO project with ID: ${projectId}`);
+            } else {
+              projectId = new ObjectId();
+              console.log(`Creating new project with ID: ${projectId}`);
+
+              await qtoDb.collection("projects").insertOne({
+                _id: projectId,
+                name: projectName,
+                type: "BimProject",
+                status: "active",
+                metadata: {
+                  source: "cost-plugin",
+                  has_cost_data: true,
+                },
+                created_at: new Date(),
+                updated_at: new Date(),
+              });
+            }
+
+            // Step 2: Delete existing costElements entries but KEEP costData entries
+            // IMPORTANT: We're only updating the costElements collection here
+            // The costData collection already contains the Excel data from the upload step
+            console.log(
+              `Deleting only costElements entries for project ${projectId}`
+            );
+            await costDb
+              .collection("costElements")
+              .deleteMany({ project_id: projectId });
+
+            // Step 3: Skip saving Excel items to costData - we've already done this during upload
+            console.log(
+              `Using ${allExcelItems.length} existing Excel items from costData collection (not modifying costData)`
+            );
+
+            // Step 4: Process matched items using the existing function to update costElements
+            const matchedResult = await saveCostDataBatch(
+              matchedItems,
+              projectName
+            );
+            console.log(
+              `Processed ${matchedItems.length} matched items for costElements collection`
+            );
+
+            return {
+              excelItemsAlreadySaved: allExcelItems.length,
+              matchedItemsProcessed: matchedItems.length,
+              qtoElementsUpdated: matchedResult.modifiedCount || 0,
+            };
+          };
+
+          // Call our custom handler
+          const result = await saveFullBatchResult(
+            matchedItems,
+            allExcelItems,
+            projectName
+          );
+
+          // Send success response
+          ws.send(
+            JSON.stringify({
+              type: "save_cost_batch_full_response",
+              messageId,
+              status: "success",
+              message: `Successfully updated ${result.matchedItemsProcessed} matched QTO elements in costElements collection (${result.excelItemsAlreadySaved} Excel items were already saved in costData during upload).`,
+              result,
+            })
+          );
+        } catch (error) {
+          console.error(
+            `Error saving full batch for project '${projectName}':`,
+            error
+          );
+          // Send error response
+          ws.send(
+            JSON.stringify({
+              type: "save_cost_batch_full_response",
+              messageId,
+              status: "error",
+              message: `Failed to save full batch data: ${error.message}`,
+            })
+          );
+        }
+        return; // Ensure we don't fall through
+      }
+      // Handle direct Excel data upload (save raw Excel data without matching)
+      else if (data.type === "save_excel_data") {
+        const { projectName, excelItems, replaceExisting } = data.payload || {};
+        const messageId = data.messageId;
+
+        if (!projectName || !excelItems || excelItems.length === 0) {
+          console.error("Invalid save_excel_data payload:", data.payload);
+          ws.send(
+            JSON.stringify({
+              type: "save_excel_data_response",
+              messageId,
+              status: "error",
+              message: "Invalid payload. Missing projectName or excelItems.",
+            })
+          );
+          return;
+        }
+
+        console.log(
+          `Received raw Excel data for project '${projectName}' with ${excelItems.length} items.`
+        );
+
+        try {
+          // Connect to MongoDB and get database references
+          const { costDb, qtoDb } = await connectToMongoDB();
+
+          // Find or create the project
+          let projectId;
+
+          const qtoProject = await qtoDb.collection("projects").findOne({
+            name: { $regex: new RegExp(`^${projectName}$`, "i") },
+          });
+
+          if (qtoProject) {
+            projectId = qtoProject._id;
+            console.log(`Found existing QTO project with ID: ${projectId}`);
+          } else {
+            projectId = new ObjectId();
+            console.log(`Creating new project with ID: ${projectId}`);
+
+            await qtoDb.collection("projects").insertOne({
+              _id: projectId,
+              name: projectName,
+              type: "BimProject",
+              status: "active",
+              metadata: {
+                source: "cost-plugin",
+                has_cost_data: true,
+              },
+              created_at: new Date(),
+              updated_at: new Date(),
+            });
+          }
+
+          // Delete existing costData if replaceExisting flag is true
+          if (replaceExisting) {
+            console.log(
+              `Deleting existing costData for project ${projectName} before saving new data`
+            );
+            const deleteResult = await costDb
+              .collection("costData")
+              .deleteMany({
+                project_id: projectId,
+              });
+            console.log(
+              `Deleted ${deleteResult.deletedCount} existing costData entries`
+            );
+          }
+
+          // Save all Excel items to costData collection
+          const costDataToSave = excelItems
+            .map((item, index) => {
+              // Skip items with unit_cost of 0
+              const unitCost = parseFloat(item.kennwert || 0) || 0;
+              if (unitCost <= 0) {
+                console.log(
+                  `Skipping Excel item with EBKP ${
+                    item.ebkp || ""
+                  } due to zero unit cost`
+                );
+                return null; // Return null for items to be filtered out
+              }
+
+              // Return valid items as before
+              return {
+                _id: new ObjectId(),
+                project_id: projectId,
+                ebkp_code: item.ebkp || "",
+                category: item.bezeichnung || item.category || "",
+                level: item.level || "",
+                unit_cost: unitCost,
+                quantity: parseFloat(item.menge || 0) || 0,
+                total_cost: parseFloat(item.totalChf || item.chf || 0) || 0,
+                currency: "CHF",
+                metadata: {
+                  source: "excel-import",
+                  timestamp: new Date(),
+                  original_data: {
+                    einheit: item.einheit || "m²",
+                    kommentar: item.kommentar || "",
+                    excel_row: index + 1,
+                  },
+                },
+                created_at: new Date(),
+                updated_at: new Date(),
+              };
+            })
+            .filter((item) => item !== null); // Filter out null items
+
+          // Save to database
+          const costDataResult = await costDb
+            .collection("costData")
+            .insertMany(costDataToSave);
+          console.log(
+            `Successfully saved ${costDataResult.insertedCount} Excel items to costData collection`
+          );
+
+          // Send success response
+          ws.send(
+            JSON.stringify({
+              type: "save_excel_data_response",
+              messageId,
+              status: "success",
+              message: `Successfully saved ${costDataResult.insertedCount} Excel items.`,
+              insertedCount: costDataResult.insertedCount,
+            })
+          );
+        } catch (error) {
+          console.error(
+            `Error saving Excel data for project '${projectName}':`,
+            error
+          );
+          // Send error response
+          ws.send(
+            JSON.stringify({
+              type: "save_excel_data_response",
+              messageId,
+              status: "error",
+              message: `Failed to save Excel data: ${error.message}`,
+            })
+          );
+        }
+        return; // Ensure we don't fall through
       } else if (data.type === "ping") {
         console.log(`Received ping from client ${clientId}, sending pong`);
         ws.send(JSON.stringify({ type: "pong" }));
@@ -798,15 +1287,6 @@ wss.on("connection", async (ws, req) => {
   ws.on("error", (error) => {
     console.error(`WebSocket error for client ${clientId}:`, error);
   });
-
-  // Send initial element info
-  ws.send(
-    JSON.stringify({
-      type: "element_info",
-      elementCount: Object.keys(ifcElementsByEbkph).length,
-      timestamp: new Date().toISOString(),
-    })
-  );
 });
 
 // Function to broadcast messages to all connected clients
@@ -1299,9 +1779,6 @@ let costTopicReady = false;
 const shutdown = async () => {
   console.log("Shutting down...");
 
-  // Save elements to file before shutting down
-  await saveElementsToFile();
-
   // Clear intervals
   clearInterval(heartbeatInterval);
 
@@ -1414,7 +1891,7 @@ server.listen(config.websocket.port, async () => {
       console.log(`Available eBKP codes:`, Object.keys(ifcElementsByEbkph));
 
       // Print QTO element codes summary
-      await printAllQtoElementCodes();
+      // await printAllQtoElementCodes(); // Function not defined
     }
   } catch (error) {
     console.error("Error loading elements from MongoDB:", error);
@@ -1435,9 +1912,9 @@ server.listen(config.websocket.port, async () => {
   setTimeout(sendTestMessage, 10000); // Start after 10 seconds
 
   // Set up periodic save
-  setInterval(() => {
-    saveElementsToFile();
-  }, config.storage.saveInterval);
+  // setInterval(() => {
+  //   saveElementsToFile(); // Function not defined
+  // }, config.storage.saveInterval);
 });
 
 // Normalize EBKPH code (used for matching)

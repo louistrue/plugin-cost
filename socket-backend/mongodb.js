@@ -147,6 +147,14 @@ async function ensureConnection() {
       }
     }
   }
+
+  // Return the database references so they can be used directly
+  return {
+    client,
+    costDb,
+    qtoDb,
+    sharedDb,
+  };
 }
 
 /**
@@ -192,11 +200,16 @@ async function saveCostData(elementData, costResult) {
       { upsert: true }
     );
 
-    // Now save the cost data to the cost database
+    // Generate a unique ID for this cost data item
+    const costItemId = new ObjectId();
+
+    // Now save the cost data to the cost database - this comes directly from input
     const costData = {
-      element_id: elementId,
+      _id: costItemId,
       project_id: projectId,
+      ebkp_code: elementData.ebkp_code, // Store the EBKP code
       unit_cost: costResult.unitCost || 0,
+      quantity: elementData.area || 0, // Use area as quantity
       total_cost: costResult.totalCost || 0,
       currency: costResult.currency || "CHF",
       calculation_date: new Date(),
@@ -214,16 +227,81 @@ async function saveCostData(elementData, costResult) {
       `Saving cost data to cost.costData: ${JSON.stringify(costData)}`
     );
 
-    // Using upsert to update if exists or insert if not
-    const result = await costDb.collection("costData").updateOne(
-      { element_id: elementId },
-      {
-        $set: costData,
-        $setOnInsert: { created_at: new Date() },
-        $currentDate: { updated_at: true },
-      },
-      { upsert: true }
-    );
+    // Insert the cost data as a new document instead of updating
+    const result = await costDb.collection("costData").insertOne(costData);
+
+    // Save to costElements collection
+    // First, get the full QTO element data to ensure we have all details
+    const qtoElement = await qtoDb.collection("elements").findOne({
+      _id: elementId,
+    });
+
+    if (qtoElement) {
+      // Calculate total cost based on element's quantity/area
+      const elementArea =
+        qtoElement.original_area ||
+        qtoElement.quantity ||
+        qtoElement.properties?.area ||
+        elementData.area ||
+        0;
+      const elementTotalCost = (costResult.unitCost || 0) * elementArea;
+
+      // Create a document that preserves the QTO element structure exactly
+      // but adds cost data
+      const costElementDoc = {
+        // Use the QTO element as the base
+        ...qtoElement,
+
+        // Generate a new ID for this collection
+        _id: new ObjectId(),
+
+        // Reference to original QTO element
+        qto_element_id: qtoElement._id,
+
+        // Reference to the cost data
+        cost_item_id: costItemId,
+
+        // Add cost data without changing the structure
+        unit_cost: costResult.unitCost || 0,
+        total_cost: elementTotalCost,
+        currency: costResult.currency || "CHF",
+
+        // Add cost data to properties
+        properties: {
+          ...qtoElement.properties,
+          cost_data: {
+            unit_cost: costResult.unitCost || 0,
+            total_cost: elementTotalCost,
+            source: costResult.method || "excel-import",
+            timestamp: new Date(),
+          },
+        },
+
+        // Update timestamps
+        qto_created_at: qtoElement.created_at,
+        qto_updated_at: qtoElement.updated_at,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      console.log(
+        `Saving cost element to cost.costElements: ${JSON.stringify(
+          costElementDoc
+        )}`
+      );
+
+      // First delete any existing entries for this QTO element to avoid duplicates
+      await costDb
+        .collection("costElements")
+        .deleteMany({ qto_element_id: elementId });
+
+      // Then insert the new costElement document
+      await costDb.collection("costElements").insertOne(costElementDoc);
+    } else {
+      console.log(
+        `QTO element with ID ${elementId} not found, skipping costElements update`
+      );
+    }
 
     // Update the project cost summary
     await updateProjectCostSummary(projectId);
@@ -303,52 +381,80 @@ async function updateProjectCostSummary(projectId) {
       return { error: `Invalid project ID format: ${projectId}` };
     }
 
-    // Get all cost data for the project
-    const costData = await costDb
-      .collection("costData")
+    // Get the costElements - these should be the single source of truth
+    // This avoids double-counting that might happen when combining costElements and costData
+    const costElements = await costDb
+      .collection("costElements")
       .find({
         project_id: projectObjId,
       })
       .toArray();
 
-    if (costData.length === 0) {
-      console.log(`No cost data found for project ${projectId}`);
+    // Get costData count for reference only
+    const costDataCount = await costDb.collection("costData").countDocuments({
+      project_id: projectObjId,
+    });
+
+    if (costElements.length === 0) {
+      console.log(`No cost elements found for project ${projectId}`);
       return {
-        project_id: projectId,
-        total_cost: 0,
-        breakdown: [],
+        project_id: projectObjId,
+        elements_count: 0,
+        cost_data_count: costDataCount,
+        total_from_cost_data: 0,
+        total_from_elements: 0,
         created_at: new Date(),
-        message: "No cost data found for this project",
+        updated_at: new Date(),
       };
     }
 
-    // Calculate total cost
-    const totalCost = costData.reduce(
-      (sum, item) => sum + (item.total_cost || 0),
-      0
-    );
+    // Create a map of element IDs to prevent double counting in hierarchical elements
+    const processedElementIds = new Set();
 
-    // Create breakdown by category/type
-    const breakdown = {};
-    for (const item of costData) {
-      const category = item.metadata?.ebkp_code?.substring(0, 1) || "Other";
-      breakdown[category] = (breakdown[category] || 0) + (item.total_cost || 0);
-    }
+    // Calculate total from costElements - only count each element once
+    // This mimics what the UI does in CostTableRow.tsx
+    let totalFromElements = 0;
 
-    // Update or create summary
+    costElements.forEach((element) => {
+      const elementId = element._id.toString();
+      if (!processedElementIds.has(elementId)) {
+        processedElementIds.add(elementId);
+        // Only add the element's total cost if it has one
+        if (element.total_cost) {
+          totalFromElements += element.total_cost;
+        }
+      }
+    });
+
+    // For reference only, calculate total from costData
+    const costDataTotal = await costDb
+      .collection("costData")
+      .aggregate([
+        { $match: { project_id: projectObjId } },
+        { $group: { _id: null, total: { $sum: "$total_cost" } } },
+      ])
+      .toArray()
+      .then((result) => result[0]?.total || 0)
+      .catch((_) => 0);
+
+    // Create simplified summary document with only the requested fields
     const summary = {
-      project_id: projectId.toString(),
-      total_cost: totalCost,
-      breakdown: Object.entries(breakdown).map(([category, cost]) => ({
-        category,
-        cost,
-      })),
+      project_id: projectObjId,
+      elements_count: costElements.length,
+      cost_data_count: costDataCount,
+      total_from_cost_data: costDataTotal,
+      total_from_elements: totalFromElements,
       created_at: new Date(),
-      calculation_parameters: {
-        method: "sum",
-        currency: "CHF",
-      },
+      updated_at: new Date(),
     };
+
+    // Log the summary for debugging
+    console.log(`Project cost summary for ${projectId}:`, {
+      elements_count: summary.elements_count,
+      cost_data_count: summary.cost_data_count,
+      total_from_elements: summary.total_from_elements,
+      total_from_cost_data: summary.total_from_cost_data,
+    });
 
     const result = await costDb
       .collection("costSummaries")
@@ -415,33 +521,50 @@ async function getAllElementsForProject(projectName) {
       );
     }
 
-    // If we didn't find elements through the project ID, try looking for elements with project_name field
+    // If we didn't find elements through the project ID, try different search methods
     if (elements.length === 0) {
-      // Look for elements with project_name field
-      elements = await qtoDb
-        .collection("elements")
-        .find({
-          project_name: { $regex: new RegExp(projectName, "i") },
-        })
-        .toArray();
+      // Try looking for elements with different combinations of project name fields and eBKP code locations
+      const searches = [
+        // By project_name field
+        { project_name: { $regex: new RegExp(projectName, "i") } },
 
-      console.log(
-        `Found ${elements.length} elements by project_name field search`
-      );
-    }
+        // By properties.project_name field
+        { "properties.project_name": { $regex: new RegExp(projectName, "i") } },
 
-    // If still no elements, try looking for elements with name field in properties
-    if (elements.length === 0) {
-      elements = await qtoDb
-        .collection("elements")
-        .find({
-          "properties.project_name": { $regex: new RegExp(projectName, "i") },
-        })
-        .toArray();
+        // By eBKP classification - look for elements that might match this project
+        { "properties.classification.system": "EBKP" },
 
-      console.log(
-        `Found ${elements.length} elements by properties.project_name field search`
-      );
+        // By ebkph property
+        { "properties.ebkph": { $exists: true } },
+      ];
+
+      for (const searchQuery of searches) {
+        if (elements.length === 0) {
+          try {
+            const foundElements = await qtoDb
+              .collection("elements")
+              .find(searchQuery)
+              .limit(200) // Limit to avoid too many results
+              .toArray();
+
+            console.log(
+              `Found ${
+                foundElements.length
+              } elements using search: ${JSON.stringify(searchQuery)}`
+            );
+
+            if (foundElements.length > 0) {
+              elements = foundElements;
+              break;
+            }
+          } catch (err) {
+            console.error(
+              `Error with search query ${JSON.stringify(searchQuery)}:`,
+              err
+            );
+          }
+        }
+      }
     }
 
     // If still no elements, check all collections in QTO database for elements related to this project
@@ -498,6 +621,20 @@ async function getAllElementsForProject(projectName) {
       const elementId = element._id.toString();
       const cost = costDataMap[elementId];
 
+      // If the element already has cost data embedded, use it
+      if (element.unit_cost !== undefined && element.total_cost !== undefined) {
+        return {
+          ...element,
+          cost_data: {
+            unit_cost: element.unit_cost,
+            total_cost: element.total_cost,
+            currency: element.currency || "CHF",
+            calculation_date: element.updated_at,
+          },
+        };
+      }
+
+      // Otherwise look for cost data in the cost database
       return {
         ...element,
         cost_data: cost
@@ -519,13 +656,211 @@ async function getAllElementsForProject(projectName) {
 }
 
 /**
+ * Get cost elements by project ID
+ * This returns elements from the costElements collection which combines QTO and cost data
+ */
+async function getCostElementsByProject(projectName) {
+  await ensureConnection();
+
+  try {
+    console.log(`Looking up cost elements by project name: ${projectName}`);
+
+    // First find the project ID
+    const project = await qtoDb.collection("projects").findOne({
+      name: { $regex: new RegExp(`^${projectName}$`, "i") },
+    });
+
+    if (!project) {
+      console.warn(`Project not found with name: ${projectName}`);
+      return {
+        elements: [],
+        summary: {
+          count: 0,
+          uniqueEbkpCodes: 0,
+          ebkpCodes: [],
+          totalArea: 0,
+          totalCost: 0,
+          currency: "CHF",
+        },
+      };
+    }
+
+    const projectId = project._id;
+    console.log(`Found project with ID: ${projectId}`);
+
+    // Get cost elements for this project
+    const costElements = await costDb
+      .collection("costElements")
+      .find({ project_id: projectId })
+      .toArray();
+
+    console.log(
+      `Found ${costElements.length} cost elements for project ${projectName}`
+    );
+
+    // Compute summary statistics
+    // Look for EBKP code in properties.classification.id or properties.ebkph
+    const ebkpCodes = new Set();
+    costElements.forEach((element) => {
+      let code = null;
+      if (element.properties?.classification?.id) {
+        code = element.properties.classification.id;
+      } else if (element.properties?.ebkph) {
+        code = element.properties.ebkph;
+      }
+      if (code) {
+        ebkpCodes.add(code);
+      }
+    });
+
+    // Calculate total area using quantity or original_area
+    const totalArea = costElements.reduce(
+      (sum, element) => sum + (element.original_area || element.quantity || 0),
+      0
+    );
+
+    const totalCost = costElements.reduce(
+      (sum, element) => sum + (element.total_cost || 0),
+      0
+    );
+
+    // Return elements with summary
+    return {
+      elements: costElements,
+      summary: {
+        count: costElements.length,
+        uniqueEbkpCodes: ebkpCodes.size,
+        ebkpCodes: Array.from(ebkpCodes),
+        totalArea: totalArea,
+        totalCost: totalCost,
+        currency: costElements.length > 0 ? costElements[0].currency : "CHF",
+      },
+    };
+  } catch (error) {
+    console.error("Error getting cost elements by project:", error);
+    return {
+      elements: [],
+      summary: {
+        count: 0,
+        uniqueEbkpCodes: 0,
+        ebkpCodes: [],
+        totalArea: 0,
+        totalCost: 0,
+        currency: "CHF",
+      },
+    };
+  }
+}
+
+/**
+ * Get cost elements by EBKP code
+ * This returns elements from the costElements collection filtered by EBKP code
+ */
+async function getCostElementsByEbkpCode(ebkpCode) {
+  await ensureConnection();
+
+  try {
+    console.log(`Looking up cost elements by EBKP code: ${ebkpCode}`);
+
+    // Find elements where either properties.classification.id or properties.ebkph match
+    const costElements = await costDb
+      .collection("costElements")
+      .find({
+        $or: [
+          { "properties.classification.id": ebkpCode },
+          { "properties.ebkph": ebkpCode },
+        ],
+      })
+      .toArray();
+
+    console.log(
+      `Found ${costElements.length} cost elements for EBKP code ${ebkpCode}`
+    );
+
+    // Compute summary statistics
+    const projectIds = new Set(
+      costElements.map((element) => element.project_id.toString())
+    );
+    const projects = [];
+
+    for (const projectId of projectIds) {
+      try {
+        const project = await qtoDb.collection("projects").findOne({
+          _id: new ObjectId(projectId),
+        });
+        if (project) {
+          projects.push({
+            id: projectId,
+            name: project.name || "Unknown Project",
+          });
+        }
+      } catch (error) {
+        console.warn(`Could not find project with ID ${projectId}`);
+      }
+    }
+
+    // Calculate total area using quantity or original_area
+    const totalArea = costElements.reduce(
+      (sum, element) => sum + (element.original_area || element.quantity || 0),
+      0
+    );
+
+    const totalCost = costElements.reduce(
+      (sum, element) => sum + (element.total_cost || 0),
+      0
+    );
+
+    const avgUnitCost =
+      costElements.length > 0
+        ? costElements.reduce(
+            (sum, element) => sum + (element.unit_cost || 0),
+            0
+          ) / costElements.length
+        : 0;
+
+    // Return elements with summary
+    return {
+      elements: costElements,
+      summary: {
+        count: costElements.length,
+        projects: projects,
+        ebkpCode: ebkpCode,
+        totalArea: totalArea,
+        totalCost: totalCost,
+        avgUnitCost: avgUnitCost,
+        currency: costElements.length > 0 ? costElements[0].currency : "CHF",
+      },
+    };
+  } catch (error) {
+    console.error("Error getting cost elements by EBKP code:", error);
+    return {
+      elements: [],
+      summary: {
+        count: 0,
+        projects: [],
+        ebkpCode: ebkpCode,
+        totalArea: 0,
+        totalCost: 0,
+        avgUnitCost: 0,
+        currency: "CHF",
+      },
+    };
+  }
+}
+
+/**
  * Save cost data in batch
+ * This function now only processes QTO elements for costElements collection
+ * Excel data is already saved to costData in a separate step
  */
 async function saveCostDataBatch(costItems, projectName) {
   try {
-    await ensureConnection();
+    // Ensure MongoDB connection and get database references
+    const { costDb: costDatabase, qtoDb: qtoDatabase } =
+      await ensureConnection();
+
     console.log(
-      `Starting batch save for project: ${projectName}, ${costItems.length} items`
+      `Starting batch save for project: ${projectName}, ${costItems.length} items from matching QTO elements for costElements collection`
     );
 
     if (!costItems || costItems.length === 0) {
@@ -533,198 +868,390 @@ async function saveCostDataBatch(costItems, projectName) {
       return { insertedCount: 0, message: "No items to save" };
     }
 
-    // First check if the projects collection exists, create it if needed
-    const collections = await costDb
-      .listCollections({ name: "projects" })
-      .toArray();
-    if (collections.length === 0) {
-      console.log("Creating projects collection as it doesn't exist");
-      await costDb.createCollection("projects");
-    }
+    // First, find the project in QTO database
+    console.log(`Looking up project in QTO database: ${projectName}`);
+    const qtoProject = await qtoDatabase.collection("projects").findOne({
+      name: { $regex: new RegExp(`^${projectName}$`, "i") },
+    });
 
-    // Declare projectId variable that will be set in the following code
     let projectId;
 
-    try {
-      // First, save or get project
-      console.log(`Looking up or creating project: ${projectName}`);
-      const result = await costDb.collection("projects").findOneAndUpdate(
-        { name: projectName },
-        {
-          $setOnInsert: {
-            name: projectName,
-            created_at: new Date(),
-          },
-          $set: {
-            updated_at: new Date(),
-          },
-        },
-        { upsert: true, returnDocument: "after" }
-      );
-
-      console.log(
-        `findOneAndUpdate result:`,
-        JSON.stringify(result, null, 2).substring(0, 200)
-      );
-
-      // Handle various result formats from different MongoDB driver versions
-      if (result && result.value && result.value._id) {
-        // MongoDB driver returned { value: { _id: ... } }
-        projectId = result.value._id;
-        console.log(`Found project via result.value._id: ${projectId}`);
-      } else if (result && result._id) {
-        // MongoDB driver returned the document directly
-        projectId = result._id;
-        console.log(`Found project via result._id: ${projectId}`);
-      } else if (
-        result &&
-        result.lastErrorObject &&
-        result.lastErrorObject.upserted
-      ) {
-        // MongoDB driver returned upserted ID in lastErrorObject
-        projectId = result.lastErrorObject.upserted;
-        console.log(
-          `Found project via result.lastErrorObject.upserted: ${projectId}`
-        );
-      } else {
-        // No valid ID format found in the result, create project manually
-        throw new Error(
-          "Could not extract project ID from findOneAndUpdate result"
-        );
-      }
-    } catch (error) {
-      // Fallback: Create project directly if findOneAndUpdate didn't work
-      console.error(`Error finding/creating project: ${error.message}`);
-      console.log("Creating project manually as fallback");
-
+    if (qtoProject) {
+      // Use the existing QTO project ID
+      projectId = qtoProject._id;
+      console.log(`Found existing QTO project with ID: ${projectId}`);
+    } else {
+      // Create a new project ID if QTO project doesn't exist
       projectId = new ObjectId();
-      const insertResult = await costDb.collection("projects").insertOne({
+      console.log(`Creating new project with ID: ${projectId}`);
+
+      // Create the project in QTO database
+      await qtoDatabase.collection("projects").insertOne({
         _id: projectId,
         name: projectName,
+        type: "BimProject",
+        status: "active",
+        metadata: {
+          source: "cost-plugin",
+          has_cost_data: true,
+        },
         created_at: new Date(),
         updated_at: new Date(),
       });
-
-      if (insertResult.acknowledged) {
-        console.log(`Created new project with ID: ${projectId}`);
-      } else {
-        throw new Error("Failed to create project");
-      }
     }
 
-    // Prepare cost items for batch insert
-    const costDataToSave = costItems.map((item) => {
-      // Convert properties to ensure they are numbers if they should be
-      const kennwert = parseFloat(item.cost_unit || item.kennwert || 0);
-      const menge = parseFloat(item.menge || item.area || 0);
-      const totalCost = parseFloat(
-        item.totalChf || item.cost || kennwert * menge || 0
+    // IMPORTANT NOTE: We do NOT delete costData entries here
+    // This function is called during preview confirmation
+    // costData entries are already saved during the Excel upload phase
+    // and should not be touched here
+    console.log(
+      `NOTE: Not deleting costData entries in this flow - only updating costElements`
+    );
+
+    // Find existing QTO elements for this project
+    console.log(`Fetching existing QTO elements for project ${projectName}`);
+    let existingElements = await qtoDatabase
+      .collection("elements")
+      .find({ project_id: projectId })
+      .toArray();
+
+    console.log(
+      `Found ${existingElements.length} existing QTO elements by project_id`
+    );
+
+    // If we didn't find many elements, try broader searches
+    if (existingElements.length < 10) {
+      console.log(
+        "Few elements found by project ID, trying alternative searches..."
       );
 
-      return {
-        project_id: projectId,
-        ebkp_code: item.id || item.ebkph,
-        category: item.category || item.bezeichnung || "",
-        level: item.level || "",
-        unit_cost: kennwert,
-        quantity: menge,
-        total_cost: totalCost,
-        currency: "CHF",
-        metadata: {
-          source: "excel-import",
-          timestamp: new Date(),
-          original_data: {
-            einheit: item.einheit || "m²",
-            kommentar: item.kommentar || "",
-            fromKafka: item.fromKafka || false,
-            kafkaSource: item.kafkaSource || null,
-            kafkaTimestamp: item.kafkaTimestamp || null,
-          },
-        },
-        created_at: new Date(),
-        updated_at: new Date(),
-      };
+      // Search for elements with eBKP classification
+      const ebkpElements = await qtoDatabase
+        .collection("elements")
+        .find({
+          $or: [
+            { "properties.classification.system": "EBKP" },
+            { "properties.ebkph": { $exists: true } },
+            { ebkp_code: { $exists: true } },
+          ],
+        })
+        .limit(300)
+        .toArray();
+
+      console.log(
+        `Found ${ebkpElements.length} elements with eBKP codes via alternative search`
+      );
+
+      // Combine unique elements from both searches
+      const allElementsMap = {};
+      [...existingElements, ...ebkpElements].forEach((element) => {
+        if (!allElementsMap[element._id]) {
+          allElementsMap[element._id] = element;
+        }
+      });
+
+      existingElements = Object.values(allElementsMap);
+      console.log(
+        `Total unique elements after combined searches: ${existingElements.length}`
+      );
+    }
+
+    // Create a mapping from eBKP code to element ID
+    const ebkpToElementMap = {};
+
+    // Helper function to normalize eBKP codes for better matching
+    const normalizeEbkpCode = (code) => {
+      if (!code) return null;
+      // Remove spaces, lowercase, remove any non-alphanumeric except dots
+      return code.trim().replace(/\s+/g, "").toLowerCase();
+    };
+
+    // Create both normalized and original versions in the map
+    existingElements.forEach((element) => {
+      // Check all possible locations for eBKP code
+      let ebkpCode = null;
+
+      // 1. Check properties.ebkph
+      if (element.properties?.ebkph) {
+        ebkpCode = element.properties.ebkph;
+      }
+      // 2. Check properties.classification.id
+      else if (element.properties?.classification?.id) {
+        ebkpCode = element.properties.classification.id;
+      }
+      // 3. Check ebkp_code directly on element
+      else if (element.ebkp_code) {
+        ebkpCode = element.ebkp_code;
+      }
+
+      if (ebkpCode) {
+        // Store with original code
+        ebkpToElementMap[ebkpCode] = element._id;
+        // Also store with normalized code
+        const normalizedCode = normalizeEbkpCode(ebkpCode);
+        if (normalizedCode && normalizedCode !== ebkpCode) {
+          ebkpToElementMap[normalizedCode] = element._id;
+        }
+        console.log(`Mapped element ${element._id} to eBKP code ${ebkpCode}`);
+      }
     });
 
-    // Log what we're about to save
-    console.log(`Prepared ${costDataToSave.length} cost items for saving`);
-    if (costDataToSave.length > 0) {
-      console.log(`Sample item: ${JSON.stringify(costDataToSave[0], null, 2)}`);
-    }
+    console.log(
+      `Created mapping for ${
+        Object.keys(ebkpToElementMap).length
+      } elements by eBKP code`
+    );
 
-    // Delete existing cost data for this project
-    console.log(`Deleting existing cost data for project ${projectId}`);
-    const deleteResult = await costDb
-      .collection("costData")
-      .deleteMany({ project_id: projectId });
-    console.log(`Deleted ${deleteResult.deletedCount} existing cost items`);
+    // Create a map to store QTO elements by EBKP code for efficient lookup
+    const ebkpToElementsMap = {};
 
-    // Insert new cost data
-    if (costDataToSave.length > 0) {
-      console.log(
-        `Inserting ${costDataToSave.length} cost items for project ${projectId}`
-      );
-      const result = await costDb
-        .collection("costData")
-        .insertMany(costDataToSave);
-      console.log(`Successfully inserted ${result.insertedCount} cost items`);
+    // Build the map of QTO elements by EBKP code
+    existingElements.forEach((element) => {
+      // Get EBKP code from any possible location
+      let ebkpCode =
+        element.properties?.ebkph ||
+        element.properties?.classification?.id ||
+        element.ebkp_code;
 
-      // Now create/update corresponding element records in the QTO database
-      console.log(`Creating/updating element records in QTO database`);
+      if (ebkpCode) {
+        if (!ebkpToElementsMap[ebkpCode]) {
+          ebkpToElementsMap[ebkpCode] = [];
+        }
+        ebkpToElementsMap[ebkpCode].push(element);
 
-      // Process in batches to prevent memory issues
-      const BATCH_SIZE = 20;
-      for (let i = 0; i < costDataToSave.length; i += BATCH_SIZE) {
-        const batch = costDataToSave.slice(i, i + BATCH_SIZE);
-        const elementOps = batch.map((costItem) => {
-          // Create a basic element for each cost item
-          const elementId = new ObjectId();
-          return {
-            updateOne: {
-              filter: {
-                ebkp_code: costItem.ebkp_code,
-                project_id: costItem.project_id,
-              },
-              update: {
-                $set: {
-                  quantity: costItem.quantity,
-                  element_type: costItem.category,
-                  properties: {
-                    level: costItem.level,
-                    ebkph: costItem.ebkp_code,
-                    is_structural: true,
-                    is_external: false,
-                  },
-                  status: "active",
-                  updated_at: new Date(),
-                },
-                $setOnInsert: {
-                  _id: elementId,
-                  created_at: new Date(),
-                },
-              },
-              upsert: true,
-            },
-          };
-        });
+        // Also add with normalized code
+        const normalizedCode = normalizeEbkpCode(ebkpCode);
+        if (normalizedCode && normalizedCode !== ebkpCode) {
+          if (!ebkpToElementsMap[normalizedCode]) {
+            ebkpToElementsMap[normalizedCode] = [];
+          }
+          ebkpToElementsMap[normalizedCode].push(element);
+        }
+      }
+    });
 
-        // Execute bulk operation
-        const bulkResult = await qtoDb
-          .collection("elements")
-          .bulkWrite(elementOps);
+    // Track which elements were matched
+    const matchedElements = new Set();
+    const unmatchedEbkpCodes = [];
+
+    // Use a Map to track which QTO elements have already been processed for costElements
+    const processedQtoElements = new Map();
+
+    // Arrays to hold documents to save
+    const elementOps = [];
+
+    // STEP 1: Skip saving Excel items to costData - we've already done this separately
+    console.log(`Skipping costData insertion - already saved during upload`);
+
+    // STEP 2: Now process the QTO elements that match the Excel items
+    // ----------------------------------------------------------------------
+    costItems.forEach((item) => {
+      // Get EBKP code and cost data
+      const ebkpCode = item.ebkp || item.ebkph || item.id;
+      const kennwert = item.cost_unit || item.kennwert || 0;
+
+      // Skip items with zero unit cost
+      if (kennwert <= 0) {
         console.log(
-          `Batch ${i / BATCH_SIZE + 1}: ${
-            bulkResult.upsertedCount
-          } elements inserted, ${bulkResult.modifiedCount} elements updated`
+          `Skipping cost item with EBKP ${ebkpCode || ""} due to zero unit cost`
         );
+        return;
       }
 
-      // Update project summary
-      await updateProjectCostSummary(projectId);
-      return result;
+      if (!ebkpCode) {
+        console.warn("Item has no EBKP code, skipping:", item);
+        return;
+      }
+
+      // Normalize eBKP code for matching
+      const normalizedCode = normalizeEbkpCode(ebkpCode);
+
+      // Find matching QTO element
+      let elementId = null;
+      if (normalizedCode && ebkpToElementMap[normalizedCode]) {
+        elementId = ebkpToElementMap[normalizedCode];
+      } else if (ebkpToElementMap[ebkpCode]) {
+        elementId = ebkpToElementMap[ebkpCode];
+      }
+
+      if (elementId) {
+        matchedElements.add(ebkpCode);
+
+        // Update existing QTO element with cost data
+        elementOps.push({
+          updateOne: {
+            filter: {
+              _id: elementId,
+            },
+            update: {
+              $set: {
+                unit_cost: kennwert,
+                total_cost: item.totalChf || item.cost || 0,
+                currency: "CHF",
+                updated_at: new Date(),
+                // Update metadata as an object with $set to avoid conflict
+                metadata: {
+                  // Preserve existing metadata if any
+                  ...(existingElements.find(
+                    (e) => e._id.toString() === elementId.toString()
+                  )?.metadata || {}),
+                  // Add cost-specific metadata
+                  has_cost_data: true,
+                  cost_updated_at: new Date(),
+                },
+              },
+            },
+          },
+        });
+
+        // Find QTO elements with this EBKP code
+        const qtoElements =
+          ebkpToElementsMap[normalizedCode] ||
+          ebkpToElementsMap[ebkpCode] ||
+          [];
+
+        if (qtoElements.length > 0) {
+          // Process each QTO element but store only one entry per element
+          qtoElements.forEach((qtoElement) => {
+            const qtoElementId = qtoElement._id.toString();
+
+            // Check if we've already processed this QTO element
+            if (!processedQtoElements.has(qtoElementId)) {
+              // Calculate element-specific total cost based on its quantity/area
+              const elementArea =
+                qtoElement.original_area ||
+                qtoElement.quantity ||
+                qtoElement.properties?.area ||
+                0;
+              const elementTotalCost = kennwert * elementArea;
+
+              // Store this cost data for this QTO element
+              processedQtoElements.set(qtoElementId, {
+                unit_cost: kennwert,
+                total_cost: elementTotalCost,
+                currency: "CHF",
+                source: "excel-import",
+                timestamp: new Date(),
+              });
+            }
+          });
+        }
+      } else {
+        // Track EBKP codes that didn't match any elements
+        unmatchedEbkpCodes.push(ebkpCode);
+      }
+    });
+
+    // Now create costElements entries - only one per QTO element
+    const costElementsToSave = [];
+
+    // Process the map of QTO elements with cost data
+    for (const [qtoElementId, costData] of processedQtoElements.entries()) {
+      // Find the QTO element
+      const qtoElement = existingElements.find(
+        (e) => e._id.toString() === qtoElementId
+      );
+
+      if (qtoElement) {
+        // Create the costElement document
+        const costElementDoc = {
+          // Use the QTO element as the base
+          ...qtoElement,
+
+          // Generate a new ID for this collection
+          _id: new ObjectId(),
+
+          // Reference to original QTO element
+          qto_element_id: qtoElement._id,
+
+          // Add cost data without changing the structure
+          unit_cost: costData.unit_cost,
+          total_cost: costData.total_cost,
+          currency: costData.currency,
+
+          // Add cost data to properties
+          properties: {
+            ...qtoElement.properties,
+            cost_data: {
+              unit_cost: costData.unit_cost,
+              total_cost: costData.total_cost,
+              source: costData.source,
+              timestamp: costData.timestamp,
+            },
+          },
+
+          // Update timestamps
+          qto_created_at: qtoElement.created_at,
+          qto_updated_at: qtoElement.updated_at,
+          created_at: new Date(),
+          updated_at: new Date(),
+        };
+
+        costElementsToSave.push(costElementDoc);
+      }
     }
 
-    return { insertedCount: 0, message: "No items to save" };
+    // Log how many elements were matched/unmatched
+    console.log(`Matched ${matchedElements.size} elements with eBKP codes`);
+    if (unmatchedEbkpCodes.length > 0) {
+      console.log(
+        `${
+          unmatchedEbkpCodes.length
+        } eBKP codes did not match any existing elements: ${unmatchedEbkpCodes
+          .slice(0, 5)
+          .join(", ")}${unmatchedEbkpCodes.length > 5 ? "..." : ""}`
+      );
+    }
+
+    // Log what we're about to save
+    console.log(
+      `Prepared ${costElementsToSave.length} cost elements for saving from QTO elements`
+    );
+
+    if (costElementsToSave.length > 0) {
+      console.log(
+        `Sample cost element: ${JSON.stringify(costElementsToSave[0], null, 2)}`
+      );
+    }
+
+    // Delete existing cost elements for this project
+    console.log(`Deleting existing cost elements for project ${projectId}`);
+    const deleteElementsResult = await costDatabase
+      .collection("costElements")
+      .deleteMany({ project_id: projectId });
+    console.log(
+      `Deleted ${deleteElementsResult.deletedCount} existing cost elements`
+    );
+
+    // Insert new cost elements
+    if (costElementsToSave.length > 0) {
+      console.log(`Inserting ${costElementsToSave.length} cost elements`);
+      const costElementsResult = await costDatabase
+        .collection("costElements")
+        .insertMany(costElementsToSave);
+      console.log(
+        `Successfully inserted ${costElementsResult.insertedCount} cost elements`
+      );
+    }
+
+    // Update QTO elements with cost data
+    if (elementOps.length > 0) {
+      console.log(`Updating ${elementOps.length} QTO elements with cost data`);
+      const elemsResult = await qtoDatabase
+        .collection("elements")
+        .bulkWrite(elementOps);
+      console.log(
+        `Elements result: ${elemsResult.matchedCount} matched, ${elemsResult.modifiedCount} modified, ${elemsResult.upsertedCount} upserted`
+      );
+    }
+
+    // Update project summary
+    await updateProjectCostSummary(projectId);
+    return {
+      modifiedCount: elementOps.length,
+      insertedCount: costElementsToSave.length,
+      projectId: projectId,
+    };
   } catch (error) {
     console.error("Error saving cost data batch:", error);
     throw error;
@@ -741,5 +1268,7 @@ module.exports = {
   updateProjectCostSummary,
   getAllElementsForProject,
   saveCostDataBatch,
+  getCostElementsByProject,
+  getCostElementsByEbkpCode,
   ObjectId,
 };

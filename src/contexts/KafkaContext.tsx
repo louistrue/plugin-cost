@@ -128,6 +128,21 @@ interface KafkaProviderProps {
   children: ReactNode;
 }
 
+// Define ElementInfo interface for the window.__ELEMENT_INFO property
+interface ElementInfo {
+  elementCount: number;
+  ebkphCodes: string[];
+  projects: string[];
+  costCodes: string[];
+}
+
+// Extend the global Window interface
+declare global {
+  interface Window {
+    __ELEMENT_INFO?: ElementInfo;
+  }
+}
+
 // Provider component that will wrap the app
 export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
   const [backendUrl, setBackendUrl] = useState<string>("");
@@ -568,6 +583,15 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
           [projectName]: projectData,
         }));
 
+        // Also populate the window.__ELEMENT_INFO for PreviewModal
+        const ebkphCodes = transformedElements.map((e) => e.ebkpCode);
+        window.__ELEMENT_INFO = {
+          elementCount: transformedElements.length,
+          ebkphCodes: ebkphCodes,
+          projects: [projectName],
+          costCodes: ebkphCodes, // Use same codes for both
+        };
+
         console.log(
           `Cached ${transformedElements.length} elements for project ${projectName}`
         );
@@ -632,6 +656,40 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
     return normalized;
   };
 
+  // Function to get area and count data for a specific code
+  const getAreaData = useCallback(
+    (code: string) => {
+      if (!code) return null;
+
+      // Normalize the code for consistent matching
+      const normalizedCode = normalizeEbkpCode(code);
+
+      // Look through all cached projects for this code
+      for (const projectName in projectDataCache) {
+        const projectData = projectDataCache[projectName];
+        if (!projectData || !projectData.ebkpMap) continue;
+
+        // Check if this code exists in the project's ebkpMap
+        const elements = projectData.ebkpMap[normalizedCode] || [];
+
+        if (elements.length > 0) {
+          // Calculate total area
+          const totalArea = elements.reduce((sum, el) => sum + el.area, 0);
+
+          return {
+            value: totalArea,
+            count: elements.length,
+            timestamp: new Date().toISOString(),
+            source: "BIM",
+          };
+        }
+      }
+
+      return null;
+    },
+    [projectDataCache, normalizeEbkpCode]
+  );
+
   // Function to get all project elements
   const getProjectElements = useCallback(
     async (projectName: string): Promise<ProjectElement[]> => {
@@ -656,7 +714,7 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
         projectUpdates,
         replaceEbkpPlaceholders,
         calculateUpdatedChf,
-        getAreaData: () => null,
+        getAreaData,
         formatTimestamp,
         mongoGetElements: () => Promise.resolve([]),
         mongoProjectCost: () => Promise.resolve(0),

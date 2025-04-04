@@ -66,6 +66,16 @@ interface ProjectDetails {
   elements?: MongoElement[];
 }
 
+// Define a type for project cost summary data
+interface ProjectCostSummary {
+  created_at: string;
+  elements_count: number;
+  cost_data_count: number;
+  total_from_cost_data: number;
+  total_from_elements: number;
+  updated_at: string;
+}
+
 const MainPage = () => {
   const Instructions = [
     {
@@ -110,6 +120,7 @@ const MainPage = () => {
   );
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [totalCostSum, setTotalCostSum] = useState<number>(0);
+  const [isLoadingCost, setIsLoadingCost] = useState<boolean>(false);
 
   // Get the Kafka context for WebSocket connection and MongoDB access
   useKafka();
@@ -128,6 +139,75 @@ const MainPage = () => {
     Record<string, number>
   >({});
 
+  // Function to directly fetch cost summary from the backend
+  const fetchProjectCostData = async (projectName: string) => {
+    setIsLoadingCost(true);
+    try {
+      console.log(`Fetching cost data for project: ${projectName}`);
+
+      // Get the backend API base URL
+      let apiBaseUrl = "";
+
+      // Determine the API base URL from the WebSocket URL
+      let wsUrl = "ws://localhost:8001";
+      if ((window as { VITE_WEBSOCKET_URL?: string }).VITE_WEBSOCKET_URL) {
+        wsUrl = (window as { VITE_WEBSOCKET_URL?: string }).VITE_WEBSOCKET_URL!;
+      } else if (import.meta.env.VITE_WEBSOCKET_URL) {
+        wsUrl = import.meta.env.VITE_WEBSOCKET_URL;
+      }
+
+      // Convert WebSocket URL to HTTP URL
+      const wsProtocol = wsUrl.startsWith("wss:") ? "https:" : "http:";
+      const httpUrl = wsUrl.replace(/^ws(s)?:\/\//, "");
+      apiBaseUrl = `${wsProtocol}//${httpUrl}`;
+
+      // Encode the project name for the URL
+      const encodedProjectName = encodeURIComponent(projectName);
+
+      // Make the API call to get cost summary
+      const costApiUrl = `${apiBaseUrl}/project-cost/${encodedProjectName}`;
+      console.log(`Fetching cost data from: ${costApiUrl}`);
+
+      const response = await fetch(costApiUrl);
+
+      if (!response.ok) {
+        console.warn(
+          `Failed to fetch cost data: ${response.status} ${response.statusText}`
+        );
+        setIsLoadingCost(false);
+        return;
+      }
+
+      // Parse the response
+      const costSummary: ProjectCostSummary = await response.json();
+      console.log("Received cost summary:", costSummary);
+
+      // Update the total cost in the UI with the value from MongoDB
+      if (costSummary && costSummary.total_from_elements !== undefined) {
+        console.log(
+          `Setting total cost to ${costSummary.total_from_elements} (from total_from_elements)`
+        );
+        setTotalCostSum(costSummary.total_from_elements);
+      } else if (
+        costSummary &&
+        costSummary.total_from_cost_data !== undefined
+      ) {
+        console.log(
+          `Falling back to total_from_cost_data: ${costSummary.total_from_cost_data}`
+        );
+        setTotalCostSum(costSummary.total_from_cost_data);
+      } else {
+        console.warn(
+          "Cost summary is missing both total_from_elements and total_from_cost_data"
+        );
+      }
+    } catch (error) {
+      console.error("Error fetching cost data:", error);
+    } finally {
+      setIsLoadingCost(false);
+    }
+  };
+
   // Function to receive uploaded files from CostUploader
   const handleFileUploaded = (
     fileName: string,
@@ -138,7 +218,9 @@ const MainPage = () => {
   ) => {
     // Handle file removal
     if (status === "Gelöscht") {
-      setTotalCostSum(0); // Reset the total when a file is removed
+      // Don't reset the total cost here, instead fetch the latest from the server
+      // This ensures we display the server's actual value
+      fetchProjectCostData(selectedProject);
 
       // Update the file's status to "Gelöscht" instead of removing it
       setUploadedFiles((prev) =>
@@ -148,7 +230,6 @@ const MainPage = () => {
                 ...file,
                 status: "Gelöscht",
                 date: date || file.date,
-                totalCost: 0,
               }
             : file
         )
@@ -156,19 +237,28 @@ const MainPage = () => {
 
       return; // Exit early since we've handled the deletion
     } else {
-      // For all new uploads and updates, set the total cost to this file's cost
+      // For all new uploads and updates, we'll set totalCostSum based on
+      // the UPLOADED/EXCEL data here temporarily, but will fetch the ACTUAL
+      // MongoDB data after the upload completes
       if (costData && costData.length > 0) {
         // Calculate total cost from the cost data
-        const totalCost = costData.reduce((sum, item) => {
+        const calculatedTotal = costData.reduce((sum, item) => {
           // Only add the main row's totalChf value
           return sum + (item.totalChf || 0);
         }, 0);
 
-        setTotalCostSum(totalCost);
+        console.log(`Setting calculated total from Excel: ${calculatedTotal}`);
+        setTotalCostSum(calculatedTotal);
       }
     }
 
     if (isUpdate) {
+      // After update is complete, fetch the real data from the server to get the correct total
+      setTimeout(() => {
+        console.log("Fetching updated cost data after successful update");
+        fetchProjectCostData(selectedProject);
+      }, 1000);
+
       // Update the existing entry with "Vorschau" status to "Erfolgreich"
       setUploadedFiles((prev) =>
         prev.map((file) =>
@@ -177,7 +267,6 @@ const MainPage = () => {
                 ...file,
                 status: "Erfolgreich",
                 date: date || file.date,
-                totalCost: totalCostSum,
               }
             : file
         )
@@ -189,7 +278,6 @@ const MainPage = () => {
           name: fileName,
           date: date || new Date().toLocaleDateString(),
           status: status || "Vorschau",
-          totalCost: totalCostSum,
         },
         ...prev,
       ]);
@@ -274,6 +362,9 @@ const MainPage = () => {
       const apiUrl = `${apiBaseUrl}/project-elements/${encodedProjectName}`;
       console.log(`Fetching from API URL: ${apiUrl}`);
       const response = await fetch(apiUrl);
+
+      // Also fetch cost summary for this project to update the total cost
+      await fetchProjectCostData(projectName);
 
       // Check if response is ok
       if (!response.ok) {
@@ -371,101 +462,35 @@ const MainPage = () => {
     }
   };
 
-  // Update WebSocket connection in useEffect
-  useEffect(() => {
-    // Check if WebSocket is supported
-    if (!("WebSocket" in window)) {
-      console.error("WebSockets are not supported in this browser");
-      return;
-    }
-
-    let ws: WebSocket | null = null;
-    let wsUrl = "ws://localhost:8001";
-
-    try {
-      // Try to get the WebSocket URL from the environment
-      if (import.meta.env && import.meta.env.VITE_WEBSOCKET_URL) {
-        wsUrl = import.meta.env.VITE_WEBSOCKET_URL;
-      }
-
-      // Create connection with proper error handling
-      ws = new WebSocket(wsUrl);
-
-      // Set a connection timeout
-      const connectionTimeout = setTimeout(() => {
-        if (ws && ws.readyState !== WebSocket.OPEN) {
-          console.warn("WebSocket connection timeout");
-          ws.close();
-        }
-      }, 5000);
-
-      ws.onopen = () => {
-        console.log("WebSocket connection established");
-        clearTimeout(connectionTimeout);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log("Received WebSocket message:", data);
-          handleWSMessage(data);
-        } catch (error) {
-          console.error("Error parsing WebSocket message:", error);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-      };
-
-      ws.onclose = (event) => {
-        console.log(
-          `WebSocket connection closed: code=${event.code}, reason=${event.reason}`
-        );
-        clearTimeout(connectionTimeout);
-      };
-    } catch (error) {
-      console.error("Failed to initialize WebSocket:", error);
-    }
-
-    // Cleanup function
-    return () => {
-      if (ws) {
-        ws.close();
-      }
-    };
-  }, []);
-
-  // Handle WebSocket message types
-  const handleWSMessage = (data: {
-    projectId: string;
-    elements: MongoElement[];
-  }) => {
-    const projectEntry = Object.entries(projectDetailsMap).find(
-      ([, details]) => details.id === data.projectId
-    );
-
-    if (projectEntry) {
-      const [projectName] = projectEntry;
-      if (projectName === selectedProject) {
-        fetchElementsForProject(projectName);
-      }
-    }
-  };
-
   // Define the handler for project change
   const handleProjectChange = (event: SelectChangeEvent<string>) => {
-    const projectName = event.target.value;
-    setSelectedProject(projectName);
-    fetchElementsForProject(projectName);
+    const newProject = event.target.value;
+    setSelectedProject(newProject);
+
+    // When project changes, fetch both elements and cost data for the new project
+    setLoadingElements(true);
+    Promise.all([
+      fetchElementsForProject(newProject),
+      fetchProjectCostData(newProject),
+    ])
+      .catch((error) => {
+        console.error("Error loading project data after change:", error);
+      })
+      .finally(() => {
+        setLoadingElements(false);
+      });
   };
 
   // Load project data on component mount
   useEffect(() => {
-    // Load data for the initially selected project
+    // Load data for the initially selected project, but only once on mount
     if (selectedProject) {
       setLoadingElements(true);
-      fetchElementsForProject(selectedProject)
+      // Initial data load when the page first opens
+      Promise.all([
+        fetchElementsForProject(selectedProject),
+        fetchProjectCostData(selectedProject),
+      ])
         .catch((error) => {
           console.error("Error loading initial project data:", error);
         })
@@ -473,7 +498,12 @@ const MainPage = () => {
           setLoadingElements(false);
         });
     }
-  }, []);
+  }, []); // Empty dependency array ensures this only runs once on mount
+
+  // Add a refresh button function for cost data
+  const refreshCostData = () => {
+    fetchProjectCostData(selectedProject);
+  };
 
   // Function to render element statistics
   const renderElementStats = () => {
@@ -618,8 +648,20 @@ const MainPage = () => {
                 background: "linear-gradient(to right top, #F1D900, #fff176)",
                 borderRadius: 1,
                 textAlign: "center",
+                position: "relative",
               }}
             >
+              {isLoadingCost && (
+                <CircularProgress
+                  size={16}
+                  sx={{
+                    position: "absolute",
+                    top: 5,
+                    right: 5,
+                    color: "#666",
+                  }}
+                />
+              )}
               <Typography
                 variant="h4"
                 component="p"
@@ -634,6 +676,13 @@ const MainPage = () => {
                 >
                   CHF
                 </Typography>
+              </Typography>
+              <Typography
+                variant="caption"
+                sx={{ mt: 0.5, display: "block", cursor: "pointer" }}
+                onClick={refreshCostData}
+              >
+                Aktualisiert: {new Date().toLocaleTimeString()}
               </Typography>
             </Box>
 
@@ -801,6 +850,7 @@ const MainPage = () => {
                 onFileUploaded={handleFileUploaded}
                 totalElements={0}
                 totalCost={totalCostSum}
+                projectName={selectedProject}
                 elementsComponent={
                   <Box
                     sx={{

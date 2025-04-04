@@ -1,4 +1,20 @@
 // MongoDB initialization script
+//
+// The costElements collection represents a combined view of QTO elements with
+// their associated cost data. It preserves the exact structure of QTO elements
+// and adds cost data (unit_cost, total_cost) from user-uploaded Excel files.
+//
+// The costSummaries collection stores simplified aggregated cost data with only essential fields:
+// - created_at: When the summary was created
+// - elements_count: Number of elements in costElements
+// - cost_data_count: Number of items in costData
+// - total_from_cost_data: Total cost sum from costData collection
+// - total_from_elements: Total cost sum from costElements collection
+// - updated_at: When the summary was last updated
+//
+// Unlike costData which stores only cost information, costElements maintains the
+// complete QTO element structure with materials, properties, and classification
+// data for more comprehensive analysis and reporting.
 
 // Connect to admin database
 db = db.getSiblingDB("admin");
@@ -32,10 +48,23 @@ databases.forEach((dbName) => {
     // Create collections for Cost
     db.createCollection("costData");
     db.createCollection("costSummaries");
+    db.createCollection("costElements");
 
     // Create indexes
     db.costData.createIndex({ element_id: 1 });
-    db.costSummaries.createIndex({ project_id: 1 });
+    db.costData.createIndex({ project_id: 1 });
+    db.costData.createIndex({ ebkp_code: 1 });
+
+    // Simplified costSummaries indexes
+    db.costSummaries.createIndex({ project_id: 1 }, { unique: true });
+    db.costSummaries.createIndex({ updated_at: 1 });
+    db.costSummaries.createIndex({ total_from_elements: 1 });
+    db.costSummaries.createIndex({ total_from_cost_data: 1 });
+
+    db.costElements.createIndex({ element_id: 1 });
+    db.costElements.createIndex({ ebkp_code: 1 });
+    db.costElements.createIndex({ project_id: 1 });
+    db.costElements.createIndex({ qto_element_id: 1 });
   } else if (dbName === "lca") {
     // Create collections for LCA
     db.createCollection("lcaResults");

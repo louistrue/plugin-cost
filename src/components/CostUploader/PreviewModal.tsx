@@ -33,10 +33,41 @@ import InfoIcon from "@mui/icons-material/Info";
 import { MetaFile, CostItem } from "./types";
 import { useKafka } from "../../contexts/KafkaContext";
 
+// Define a more specific type for the enhanced data passed to onConfirm
+// Based on the structure created in handleConfirm
+// Export it here as well to try and resolve import issues
+export interface EnhancedCostItem extends CostItem {
+  id: string;
+  category: string;
+  level: string;
+  is_structural: boolean;
+  fire_rating: string;
+  ebkp: string;
+  ebkph: string;
+  ebkph1: string;
+  ebkph2: string;
+  ebkph3: string;
+  cost_unit: number;
+  area: number;
+  cost: number;
+  element_count: number;
+  fileID: string;
+  fromKafka: boolean;
+  kafkaSource: string;
+  kafkaTimestamp: string;
+  areaSource: string;
+  einheit: string;
+  menge: number;
+  totalChf: number;
+  kennwert: number;
+  bezeichnung: string;
+  originalItem?: Partial<CostItem>; // Make originalItem optional and partial
+}
+
 interface PreviewModalProps {
   open: boolean;
   onClose: () => void;
-  onConfirm: (matches: any[]) => void;
+  onConfirm: (matches: EnhancedCostItem[]) => void; // Use the specific type here
   metaFile: MetaFile | null;
   totalCost: number;
 }
@@ -51,6 +82,20 @@ interface MatchInfo {
 interface ElementInfo {
   ebkphCodes: string[];
   elementCount: number;
+  projects: string[];
+  costCodes: string[];
+}
+
+// Define the structure for the WebSocket response
+interface WebSocketResponse {
+  matchingCodes: { code: string; unitCost: number; elementCount: number }[];
+  ifcCodeCount?: number;
+}
+
+// Define an interface for the data expected in window.__ELEMENT_INFO
+interface WindowElementInfo {
+  elementCount: number;
+  ebkphCodes: string[];
   projects: string[];
   costCodes: string[];
 }
@@ -177,8 +222,16 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
 
     // Here we can use pre-cached data from the WebSocket connection
     // This data is already in window.__ELEMENT_INFO if available
-    if ((window as any).__ELEMENT_INFO) {
-      currentElementInfo = (window as any).__ELEMENT_INFO;
+    if (
+      (
+        window as Window &
+          typeof globalThis & { __ELEMENT_INFO?: WindowElementInfo }
+      ).__ELEMENT_INFO
+    ) {
+      currentElementInfo = (
+        window as Window &
+          typeof globalThis & { __ELEMENT_INFO: WindowElementInfo }
+      ).__ELEMENT_INFO;
     }
     // Or we can check if we have costCodes from the UI
     else if (document.querySelector("[data-cost-codes]")) {
@@ -192,6 +245,32 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
       } catch (e) {
         console.error("Error parsing cost codes from DOM", e);
       }
+    }
+    // If we still don't have any codes, use the eBKP codes from the Excel file
+    if (
+      (!currentElementInfo.ebkphCodes ||
+        currentElementInfo.ebkphCodes.length === 0) &&
+      (!currentElementInfo.costCodes ||
+        currentElementInfo.costCodes.length === 0)
+    ) {
+      // Extract all eBKP codes from the Excel file
+      const excelCodes = allCostItems
+        .filter((item) => item.ebkp && item.ebkp.trim() !== "")
+        .map((item) => item.ebkp as string);
+
+      // Use these as both ebkphCodes and costCodes
+      currentElementInfo.ebkphCodes = excelCodes;
+      currentElementInfo.costCodes = excelCodes;
+
+      // Set a reasonable element count based on the number of unique codes
+      const uniqueCodes = new Set(
+        excelCodes.map((code) => normalizeEbkpCode(code))
+      );
+      currentElementInfo.elementCount = uniqueCodes.size * 3; // Assume ~3 elements per code
+
+      console.log(
+        `Using ${uniqueCodes.size} eBKP codes from Excel as fallback`
+      );
     }
 
     setElementInfo(currentElementInfo);
@@ -315,10 +394,15 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   // Try to get more accurate data using WebSocket
   const fetchMatchDataFromWebSocket = async () => {
     try {
-      const requestCodeMatching = (window as any).requestCodeMatching;
+      const requestCodeMatching = (
+        window as Window &
+          typeof globalThis & {
+            requestCodeMatching?: () => Promise<WebSocketResponse | null>;
+          }
+      ).requestCodeMatching;
 
       if (typeof requestCodeMatching === "function") {
-        const response = await requestCodeMatching();
+        const response = await requestCodeMatching(); // Use the specific type here
 
         if (
           response &&
@@ -326,12 +410,20 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
           response.matchingCodes.length > 0
         ) {
           // We got better data, update our matches
-          const serverMatches = response.matchingCodes.map((match: any) => ({
-            code: match.code,
-            costUnit: match.unitCost,
-            elementCount: match.elementCount,
-            excelItem: costItemsByEbkp[normalizeEbkpCode(match.code)],
-          }));
+          // Define a type for the match object coming from the server if possible
+          // For now, using explicit properties
+          const serverMatches = response.matchingCodes.map(
+            (match: {
+              code: string;
+              unitCost: number;
+              elementCount: number;
+            }) => ({
+              code: match.code,
+              costUnit: match.unitCost,
+              elementCount: match.elementCount,
+              excelItem: costItemsByEbkp[normalizeEbkpCode(match.code)],
+            })
+          );
 
           // Only update if we got meaningful data
           if (serverMatches.length > 0) {
@@ -406,52 +498,63 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
     // Display loading state
     setLoading(true);
 
-    // Prepare the enhanced data to send to Kafka
-    const enhancedData = potentialMatches.map((match) => {
-      const costItem = match.excelItem || {};
-      const area = match.elementCount; // Use element count as area measurement
-      const costUnit = match.costUnit || 0; // Unit cost
-      const totalCost = area * costUnit; // Total cost calculated from area and unit cost
+    // Log the number of matches with zero unit cost that will be ignored
+    const zeroUnitCostCount = potentialMatches.filter(
+      (m) => !m.costUnit || m.costUnit <= 0
+    ).length;
+    if (zeroUnitCostCount > 0) {
+      console.log(`Skipping ${zeroUnitCostCount} matches with zero unit cost`);
+    }
 
-      // Create a complete data object with all necessary fields
-      return {
-        id: match.code,
-        category: costItem.bezeichnung || costItem.category || "",
-        level: costItem.level || "",
-        is_structural: true,
-        fire_rating: "",
-        ebkph: match.code,
-        ebkph1: match.code.match(/^([A-Z]\d+)/)?.[1] || "",
-        ebkph2: match.code.match(/^[A-Z]\d+\.(\d+)/)?.[1] || "",
-        ebkph3: "",
-        cost_unit: costUnit,
-        area: area,
-        cost: totalCost,
-        element_count: match.elementCount,
-        fileID: metaFile?.file.name || "unknown",
-        // Add flags for Kafka data integration and visualization
-        fromKafka: true,
-        kafkaSource: "BIM",
-        kafkaTimestamp: new Date().toISOString(),
-        areaSource: "BIM",
-        einheit: "m²", // Unit is always square meters for BIM data
-        // Include original Excel data for reference
-        menge: area, // Add menge explicitly for consistency
-        totalChf: totalCost, // Add totalChf for backend
-        kennwert: costUnit, // Add kennwert for backend
-        originalItem: {
-          ebkp: costItem.ebkp,
-          bezeichnung: costItem.bezeichnung,
-          kennwert: costItem.kennwert,
-          menge: costItem.menge,
-          einheit: costItem.einheit,
-        },
-      };
-    });
+    // Prepare the enhanced data to send to backend
+    // We only need to send QTO elements that matched with costs
+    // IMPORTANT: The Excel data has already been saved to costData on file upload
+    // We're only updating costElements here, NOT deleting/replacing costData
+    const enhancedData: EnhancedCostItem[] = potentialMatches
+      .filter((match) => match.costUnit > 0) // Skip items with zero cost
+      .map((match) => {
+        const costItem = match.excelItem || {};
+        const area = match.elementCount; // Use element count as area measurement
+        const costUnit = match.costUnit || 0; // Unit cost
+        const totalCost = area * costUnit; // Total cost calculated from area and unit cost
+
+        // Create a QTO-based object with cost data
+        return {
+          id: match.code,
+          ebkp: match.code,
+          ebkph: match.code,
+          ebkph1: match.code.match(/^([A-Z]\d+)/)?.[1] || "",
+          ebkph2: match.code.match(/^[A-Z]\d+\.(\d+)/)?.[1] || "",
+          ebkph3: "",
+          // QTO element properties
+          category: costItem.bezeichnung || costItem.category || "",
+          level: String(costItem.level || ""),
+          is_structural: true,
+          fire_rating: "",
+          // Cost data
+          cost_unit: costUnit,
+          area: area,
+          quantity: area,
+          cost: totalCost,
+          element_count: match.elementCount,
+          // Source information
+          fileID: metaFile?.file.name || "unknown",
+          fromKafka: true,
+          kafkaSource: "BIM",
+          kafkaTimestamp: new Date().toISOString(),
+          areaSource: "BIM",
+          // Additional properties needed for consistency
+          einheit: "m²",
+          menge: area,
+          totalChf: totalCost,
+          kennwert: costUnit,
+          bezeichnung: costItem.bezeichnung || "",
+          // Do NOT include the originalItem reference - we want to save QTO objects
+        };
+      });
 
     console.log(
-      `Sending ${enhancedData.length} enhanced items to be saved with cost data`,
-      enhancedData
+      `Sending ${enhancedData.length} matched QTO elements to update costElements collection (Excel data already saved to costData during upload - NOT deleting costData here)`
     );
 
     // First close the modal to avoid blocking UI
