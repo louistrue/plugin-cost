@@ -116,12 +116,6 @@ const MainPage = () => {
 
   // Add state for managing project data
   const [loadingElements, setLoadingElements] = useState(false);
-  const [projectStats, setProjectStats] = useState({
-    totalElements: 0,
-    elementsWithCost: 0,
-    totalCost: 0,
-    lastUpdated: "",
-  });
   const [projectDetails, setProjectDetails] =
     useState<Record<string, ProjectDetails>>(projectDetailsMap);
 
@@ -377,11 +371,6 @@ const MainPage = () => {
     }
   };
 
-  // Create a function to set the total cost
-  const setTotalCost = (cost: number) => {
-    setTotalCostSum(cost);
-  };
-
   // Update WebSocket connection in useEffect
   useEffect(() => {
     // Check if WebSocket is supported
@@ -477,33 +466,6 @@ const MainPage = () => {
     if (selectedProject) {
       setLoadingElements(true);
       fetchElementsForProject(selectedProject)
-        .then((elements) => {
-          if (elements && elements.length > 0) {
-            // Calculate project statistics
-            let elementsWithCost = 0;
-            let totalCost = 0;
-
-            elements.forEach((element: MongoElement) => {
-              if (element.properties?.area && element.properties.area > 0) {
-                elementsWithCost++;
-                totalCost += element.properties.area;
-              }
-            });
-
-            // Update project stats
-            setProjectStats({
-              totalElements: elements.length,
-              elementsWithCost: elementsWithCost,
-              totalCost: totalCost,
-              lastUpdated: new Date().toISOString(),
-            });
-
-            // Update total cost if there are no uploaded cost files yet
-            if (uploadedFiles.length === 0) {
-              setTotalCost(totalCost);
-            }
-          }
-        })
         .catch((error) => {
           console.error("Error loading initial project data:", error);
         })
@@ -609,28 +571,24 @@ const MainPage = () => {
   };
 
   return (
-    <Box sx={{ padding: "20px" }}>
-      <Box
-        sx={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          mb: 3,
-        }}
-      >
-        <Typography variant="h4" component="h1">
-        </Typography>
-      </Box>
-
+    <Box
+      sx={{
+        padding: "0",
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
       <div className="w-full flex h-full overflow-hidden">
-        {/* Sidebar */}
-        <div className="w-1/4 min-w-[300px] max-w-[400px] p-8 bg-light text-primary flex flex-col h-full">
+        {/* Sidebar - fixed, no scroll */}
+        <div className="w-1/4 min-w-[300px] max-w-[400px] px-8 pt-4 pb-0 bg-light text-primary flex flex-col h-full overflow-y-auto">
           {/* Header und Inhalte */}
-          <div className="flex flex-col flex-grow overflow-hidden">
+          <div className="flex flex-col h-full">
             <Typography variant="h3" className="text-5xl mb-2" color="primary">
               Kosten
             </Typography>
-            <div className="flex mt-4 gap-1 flex-col">
+            <div className="flex mt-2 gap-1 flex-col">
               <FormLabel focused htmlFor="select-project">
                 Projekt:
               </FormLabel>
@@ -651,34 +609,11 @@ const MainPage = () => {
               </FormControl>
             </div>
 
-            {/* Template Download Section */}
-            <div className="mt-4 mb-4">
-              <Typography
-                variant="subtitle1"
-                className="font-bold mb-2"
-                color="primary"
-              >
-                Vorlage
-              </Typography>
-              <Divider sx={{ mb: 2 }} />
-              <Button
-                variant="outlined"
-                color="primary"
-                size="small"
-                startIcon={<DownloadIcon />}
-                onClick={handleTemplateDownload}
-                fullWidth
-                sx={{ mt: 1 }}
-              >
-                Kosten-Template herunterladen
-              </Button>
-            </div>
-
             {/* Total Cost Sum Box */}
             <Box
               sx={{
                 p: 2,
-                mt: 4,
+                mt: 2,
                 mb: 2,
                 background: "linear-gradient(to right top, #F1D900, #fff176)",
                 borderRadius: 1,
@@ -702,107 +637,21 @@ const MainPage = () => {
               </Typography>
             </Box>
 
-            {/* Project Statistics Box */}
-            <Box
-              sx={{
-                p: 2,
-                mt: 4,
-                mb: 2,
-                border: "1px solid #e0e0e0",
-                borderRadius: 1,
-                background: "#f5f5f5",
-              }}
-            >
-              <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                Projektdaten
-                {loadingElements && (
-                  <Chip
-                    size="small"
-                    color="info"
-                    label="Aktualisiere..."
-                    variant="outlined"
-                    sx={{ ml: 1, height: 20, fontSize: "0.7rem" }}
-                  />
-                )}
-              </Typography>
-
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between">
-                  <Typography variant="body2" color="text.secondary">
-                    Elemente gesamt:
-                  </Typography>
-                  <Typography variant="body2" fontWeight="medium">
-                    {projectStats.totalElements}
-                  </Typography>
-                </div>
-
-                <div className="flex justify-between">
-                  <Typography variant="body2" color="text.secondary">
-                    Elemente mit Kosten:
-                  </Typography>
-                  <Typography variant="body2" fontWeight="medium">
-                    {projectStats.elementsWithCost}
-                  </Typography>
-                </div>
-
-                {projectStats.lastUpdated && (
-                  <div className="flex justify-between">
-                    <Typography variant="body2" color="text.secondary">
-                      Letzte Aktualisierung:
-                    </Typography>
-                    <Typography variant="body2" fontWeight="medium">
-                      {new Date(projectStats.lastUpdated).toLocaleTimeString()}
-                    </Typography>
-                  </div>
-                )}
-              </div>
-            </Box>
-
-            {/* Project Elements Box - New section to replace KafkaConsole */}
-            <Box
-              sx={{
-                p: 2,
-                mt: 1,
-                mb: 2,
-                border: "1px solid #e0e0e0",
-                borderRadius: 1,
-                background: "#f5f5f5",
-                maxHeight: "350px",
-                overflow: "auto",
-              }}
-            >
-              <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 2 }}>
-                Projektelemente
-                <Button
-                  size="small"
-                  startIcon={<RefreshIcon />}
-                  onClick={() => fetchElementsForProject(selectedProject)}
-                  disabled={loadingElements}
-                  variant="outlined"
-                  sx={{ ml: 1, height: 20, fontSize: "0.7rem", py: 0 }}
-                >
-                  Aktualisieren
-                </Button>
-              </Typography>
-
-              {renderElementStats()}
-            </Box>
-
-            {/* Hochgeladene Dateien Section */}
-            <div
-              className="mb-6 mt-4 flex-grow flex flex-col overflow-hidden"
-              style={{ minHeight: "200px" }}
-            >
-              <Typography
-                variant="subtitle1"
-                className="font-bold mb-2"
-                color="primary"
+            {/* Hochgeladene Dateien Section - Only show if there are files */}
+            {uploadedFiles.length > 0 && (
+              <div
+                className="mb-4 mt-2 flex flex-col overflow-hidden"
+                style={{ minHeight: "200px" }}
               >
-                Hochgeladene Dateien
-              </Typography>
-              <Divider sx={{ mb: 2 }} />
-              <div className="flex-grow flex flex-col overflow-hidden">
-                {uploadedFiles.length > 0 ? (
+                <Typography
+                  variant="subtitle1"
+                  className="font-bold mb-2"
+                  color="primary"
+                >
+                  Hochgeladene Dateien
+                </Typography>
+                <Divider sx={{ mb: 2 }} />
+                <div className="flex-grow flex flex-col overflow-hidden">
                   <TableContainer
                     sx={{
                       flex: 1,
@@ -874,66 +723,123 @@ const MainPage = () => {
                       </TableBody>
                     </Table>
                   </TableContainer>
-                ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    Keine Dateien hochgeladen
-                  </Typography>
-                )}
+                </div>
               </div>
-            </div>
-          </div>
+            )}
 
-          {/* Fusszeile */}
-          <div className="flex flex-col flex-1 mt-auto">
-            {/* Anleitung Section */}
-            <div>
-              <Typography
-                variant="subtitle1"
-                className="font-bold mb-2"
-                color="primary"
-              >
-                Anleitung
-              </Typography>
-              <Divider sx={{ mb: 2 }} />
-              <Stepper orientation="vertical" nonLinear className="max-w-xs">
-                {Instructions.map((step) => (
-                  <Step key={step.label} active>
-                    <StepLabel>
-                      <span
-                        className="leading-tight text-primary font-bold"
-                        style={{ color: "#0D0599" }}
-                      >
-                        {step.label}
-                      </span>
-                    </StepLabel>
-                    <div className="ml-8 -mt-2">
-                      <span
-                        className="text-sm leading-none"
-                        style={{ color: "#0D0599" }}
-                      >
-                        {step.description}
-                      </span>
-                    </div>
-                  </Step>
-                ))}
-              </Stepper>
+            {/* Fusszeile - Position at bottom when files aren't shown */}
+            <div
+              className={`flex flex-col mt-2 ${
+                uploadedFiles.length === 0 ? "mt-auto" : ""
+              }`}
+            >
+              {/* Anleitung Section */}
+              <div>
+                <Typography
+                  variant="subtitle1"
+                  className="font-bold mb-2"
+                  color="primary"
+                >
+                  Anleitung
+                </Typography>
+                <Divider sx={{ mb: 2 }} />
+                <Stepper orientation="vertical" nonLinear className="max-w-xs">
+                  {Instructions.map((step) => (
+                    <Step key={step.label} active>
+                      <StepLabel>
+                        <span
+                          className="leading-tight text-primary font-bold"
+                          style={{ color: "#0D0599" }}
+                        >
+                          {step.label}
+                        </span>
+                      </StepLabel>
+                      <div className="ml-8 -mt-2">
+                        <span
+                          className="text-sm leading-none"
+                          style={{ color: "#0D0599" }}
+                        >
+                          {step.description}
+                        </span>
+                      </div>
+                    </Step>
+                  ))}
+                </Stepper>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Hauptbereich */}
+        {/* Hauptbereich - single scrollbar */}
         <div className="flex-1 w-3/4 flex flex-col h-full overflow-hidden">
-          <div className="flex-grow overflow-y-auto p-10 flex flex-col h-full">
-            <Typography variant="h2" className="text-5xl mb-10">
-              Kostendaten hochladen
-            </Typography>
+          <div className="flex-grow px-10 pt-4 pb-10 flex flex-col h-full overflow-y-auto">
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                mb: 6,
+              }}
+            >
+              <Typography variant="h2" className="text-5xl">
+                Kostendaten hochladen
+              </Typography>
+              <Button
+                variant="outlined"
+                color="primary"
+                size="medium"
+                startIcon={<DownloadIcon />}
+                onClick={handleTemplateDownload}
+              >
+                Kosten-Template herunterladen
+              </Button>
+            </Box>
 
             {/* Cost Uploader Component */}
-            <div className="flex-grow flex flex-col h-full">
+            <div className="flex-grow flex flex-col h-full overflow-hidden">
               <CostUploader
                 onFileUploaded={handleFileUploaded}
-                totalElements={projectStats.totalElements}
+                totalElements={0}
                 totalCost={totalCostSum}
+                elementsComponent={
+                  <Box
+                    sx={{
+                      p: 2,
+                      mt: 4,
+                      mb: 0,
+                      border: "1px solid #e0e0e0",
+                      borderRadius: 1,
+                      background: "#f5f5f5",
+                      flex: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      width: "100%",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <Typography
+                      variant="subtitle1"
+                      fontWeight="bold"
+                      sx={{ mb: 2 }}
+                    >
+                      Projektelemente
+                      <Button
+                        size="small"
+                        startIcon={<RefreshIcon />}
+                        onClick={() => fetchElementsForProject(selectedProject)}
+                        disabled={loadingElements}
+                        variant="outlined"
+                        sx={{ ml: 1, height: 20, fontSize: "0.7rem", py: 0 }}
+                      >
+                        Aktualisieren
+                      </Button>
+                    </Typography>
+
+                    <Box sx={{ overflow: "auto", flex: 1 }}>
+                      {renderElementStats()}
+                    </Box>
+                  </Box>
+                }
               />
             </div>
           </div>

@@ -35,19 +35,70 @@ export class EbkpMapper {
 
     // Build a map for quick access by eBKP code
     this.ebkpMap = {};
+
+    // Keep track of unique codes for logging purposes
+    const uniqueCodes = new Set<string>();
+
     elements.forEach((element) => {
+      // Generate different normalized versions of the eBKP code for better matching
       const normalizedCode = this.normalizeEbkpCode(element.ebkpCode);
+      uniqueCodes.add(normalizedCode);
+
+      // Add element to map under the normalized code
       if (!this.ebkpMap[normalizedCode]) {
         this.ebkpMap[normalizedCode] = [];
       }
       this.ebkpMap[normalizedCode].push(element);
+
+      // Also add element under alternative normalization forms for better matching
+      this.addElementToAlternativeKeys(element, normalizedCode);
     });
 
     console.log(
       `EbkpMapper loaded ${elements.length} elements with ${
-        Object.keys(this.ebkpMap).length
-      } unique codes`
+        uniqueCodes.size
+      } unique codes (${Object.keys(this.ebkpMap).length} keys in map)`
     );
+  }
+
+  /**
+   * Add an element to alternative keying strategies for more robust matching
+   */
+  private addElementToAlternativeKeys(
+    element: ProjectElement,
+    normalizedCode: string
+  ) {
+    // Skip if the code is empty or doesn't match our pattern
+    if (!normalizedCode || !/^[A-Z][0-9]/.test(normalizedCode)) {
+      return;
+    }
+
+    // Alternative formats to try:
+
+    // 1. If the code has dots, also add without dots (e.g., "C1.1" → "C11")
+    const withoutDots = normalizedCode.replace(/\./g, "");
+    if (withoutDots !== normalizedCode) {
+      if (!this.ebkpMap[withoutDots]) {
+        this.ebkpMap[withoutDots] = [];
+      }
+      // Only add if not already present
+      if (!this.ebkpMap[withoutDots].some((e) => e.id === element.id)) {
+        this.ebkpMap[withoutDots].push(element);
+      }
+    }
+
+    // 2. Add just the main category (e.g., "C1.1" → "C1")
+    const mainCategory = normalizedCode.match(/^([A-Z][0-9]+)/);
+    if (mainCategory && mainCategory[1] && mainCategory[1] !== normalizedCode) {
+      const mainCategoryCode = mainCategory[1];
+      if (!this.ebkpMap[mainCategoryCode]) {
+        this.ebkpMap[mainCategoryCode] = [];
+      }
+      // Only add if not already present
+      if (!this.ebkpMap[mainCategoryCode].some((e) => e.id === element.id)) {
+        this.ebkpMap[mainCategoryCode].push(element);
+      }
+    }
   }
 
   /**
@@ -66,7 +117,10 @@ export class EbkpMapper {
     const normalized = upperCode.replace(/\s+/g, "");
 
     // Extract the letter part and number parts
-    const match = normalized.match(/([A-Z]+)([0-9.]+)/);
+    // More flexible regex to capture various formats
+    const match =
+      normalized.match(/([A-Z]+)([0-9].*)/) ||
+      normalized.match(/([A-Z]+)([0-9]+)/);
     if (!match) {
       console.log(
         `Code '${code}' doesn't match expected format - returning as is`
@@ -83,11 +137,12 @@ export class EbkpMapper {
       // Case like "C01.01" or "C1.1"
       const parts = numbers.split(".");
       normalizedNumbers = parts
-        .map((part) => parseInt(part, 10).toString())
+        .map((part) => part.replace(/^0+/, "")) // Remove leading zeros
+        .map((part) => part || "0") // Handle case where removal results in empty string
         .join(".");
     } else {
       // Case like "C01" or "C1"
-      normalizedNumbers = parseInt(numbers, 10).toString();
+      normalizedNumbers = numbers.replace(/^0+/, "") || "0"; // Remove leading zeros, default to "0" if empty
     }
 
     // Combine back
@@ -110,16 +165,17 @@ export class EbkpMapper {
     // If no elements found, try a more flexible matching
     if (elements.length === 0 && Object.keys(this.ebkpMap).length > 0) {
       console.log(
-        `No exact match found. Available codes: ${Object.keys(
-          this.ebkpMap
-        ).join(", ")}`
+        `No exact match found. Available codes: ${Object.keys(this.ebkpMap)
+          .slice(0, 10)
+          .join(", ")}${Object.keys(this.ebkpMap).length > 10 ? "..." : ""}`
       );
 
-      // Try to find similar codes by removing the dots and zeros
-      const simplifiedCode = normalizedCode.replace(/\./g, "");
-      const matches = [];
+      // Try to find similar codes - use multiple strategies:
 
-      // Find any similar code
+      // 1. First try by removing the dots
+      const simplifiedCode = normalizedCode.replace(/\./g, "");
+      const matches: ProjectElement[] = [];
+
       for (const [key, value] of Object.entries(this.ebkpMap)) {
         const simplifiedKey = key.replace(/\./g, "");
 
@@ -132,7 +188,43 @@ export class EbkpMapper {
 
             // See if the numeric parts match when leading zeros are ignored
             if (parseInt(restCode, 10) === parseInt(restKey, 10)) {
-              console.log(`Found fuzzy match: '${normalizedCode}' ~= '${key}'`);
+              console.log(
+                `Found fuzzy match (method 1): '${normalizedCode}' ~= '${key}'`
+              );
+              matches.push(...value);
+            }
+          }
+        }
+      }
+
+      // 2. If that didn't work, try prefix matching (e.g., C2 should match C2.1)
+      if (matches.length === 0) {
+        for (const [key, value] of Object.entries(this.ebkpMap)) {
+          if (
+            key.startsWith(normalizedCode) ||
+            normalizedCode.startsWith(key)
+          ) {
+            console.log(
+              `Found fuzzy match (method 2): '${normalizedCode}' ~= '${key}'`
+            );
+            matches.push(...value);
+          }
+        }
+      }
+
+      // 3. Try comparing just the main category (e.g., C1 vs C1.x)
+      if (matches.length === 0) {
+        const mainCategory = normalizedCode.match(/^([A-Z][0-9]+)/);
+        if (mainCategory && mainCategory[1]) {
+          const categoryPrefix = mainCategory[1];
+          for (const [key, value] of Object.entries(this.ebkpMap)) {
+            if (
+              key.startsWith(categoryPrefix + ".") ||
+              key === categoryPrefix
+            ) {
+              console.log(
+                `Found fuzzy match (method 3): '${normalizedCode}' ~= '${key}'`
+              );
               matches.push(...value);
             }
           }

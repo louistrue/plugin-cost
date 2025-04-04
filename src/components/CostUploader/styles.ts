@@ -90,11 +90,10 @@ export const createCellStyles = (
 
 // Table container style
 export const createTableContainerStyle = (isMobile: boolean) => ({
-  height: "calc(100vh - 350px)",
+  height: "auto",
   mb: 1,
   display: "flex",
   flexDirection: "column",
-  overflowX: "auto", // Ensure horizontal scrolling is enabled
   maxWidth: "100%",
   width: "100%",
   "& .MuiTableCell-root": {
@@ -110,7 +109,6 @@ export const createTableContainerStyle = (isMobile: boolean) => ({
     width: "100%",
     minWidth: "1200px", // Add minimum width to ensure all columns are visible
     borderCollapse: "collapse",
-    overflowX: "clip",
   },
   "& .MuiCollapse-root, & .MuiCollapse-wrapper, & .MuiCollapse-wrapperInner": {
     padding: 0,
@@ -142,8 +140,9 @@ export const tableStyle = {
 
 // Dropzone styles
 export const getDropzoneStyle = (isDragActive: boolean) => ({
-  p: 4,
-  mt: 4,
+  p: 3,
+  mt: 0,
+  mb: 0,
   textAlign: "center",
   cursor: "pointer",
   backgroundColor: isDragActive ? "#f0f7ff" : "#f5f5f5",

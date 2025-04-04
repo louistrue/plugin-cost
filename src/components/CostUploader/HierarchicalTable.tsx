@@ -182,7 +182,8 @@ const HierarchicalTable = ({
         elevation={1}
         sx={{
           ...createTableContainerStyle(isMobile),
-          overflowX: "auto",
+          maxHeight: "none",
+          overflowY: "visible",
         }}
       >
         <Table

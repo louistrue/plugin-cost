@@ -514,11 +514,11 @@ export const KafkaProvider: React.FC<KafkaProviderProps> = ({ children }) => {
           .map((element: Record<string, unknown>) => {
             // Extract eBKP code from various possible locations
             const properties = element.properties as
-              | Record<string, any>
+              | Record<string, unknown>
               | undefined;
             const ebkpCode =
-              properties?.classification?.id ||
-              properties?.ebkph ||
+              (properties?.classification as { id?: string })?.id ||
+              (properties?.ebkph as string) ||
               (element.ebkph as string) ||
               (element.ebkp_code as string) ||
               (element.ebkp as string) ||

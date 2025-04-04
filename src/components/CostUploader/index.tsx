@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, ReactNode } from "react";
 import {
   Box,
   CircularProgress,
@@ -30,12 +30,14 @@ interface CostUploaderProps {
   ) => void;
   totalElements: number;
   totalCost: number;
+  elementsComponent?: ReactNode;
 }
 
 const CostUploader = ({
   onFileUploaded,
   totalElements,
   totalCost,
+  elementsComponent,
 }: CostUploaderProps) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
@@ -61,10 +63,28 @@ const CostUploader = ({
       const fileName = metaFile.file.name;
       const currentDate = new Date().toLocaleString("de-CH");
       const status = "Gelöscht";
+      console.log(`Removing file: ${fileName}`);
       onFileUploaded(fileName, currentDate, status, [], false);
     }
 
+    // Reset all state related to the file
     setMetaFile(null);
+    setExpandedRows({});
+    setPreviewOpen(false);
+
+    // Dispatch a custom event to notify other components about file removal
+    // This will help ensure proper resetting of state in the FileInfo component
+    const resetEvent = new CustomEvent("cost-file-removed", {
+      detail: { timestamp: Date.now() },
+    });
+    window.dispatchEvent(resetEvent);
+
+    // Add a small delay before allowing new file upload to ensure clean state
+    setIsLoading(true);
+    setTimeout(() => {
+      console.log("File removal complete, state reset");
+      setIsLoading(false);
+    }, 300);
   };
 
   const handleShowPreview = () => {
@@ -132,7 +152,11 @@ const CostUploader = ({
   }, []);
 
   return (
-    <Box className="flex flex-col h-full" position="relative">
+    <Box
+      className="flex flex-col h-full"
+      position="relative"
+      sx={{ overflow: "hidden" }}
+    >
       {/* Single Loading Indicator */}
       {isLoading && (
         <Box
@@ -167,12 +191,23 @@ const CostUploader = ({
       )}
 
       {!metaFile ? (
-        <FileDropzone
-          onFileUploaded={handleFileUploaded}
-          setIsLoading={setIsLoading}
-        />
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            overflow: "hidden",
+          }}
+        >
+          <FileDropzone
+            onFileUploaded={handleFileUploaded}
+            setIsLoading={setIsLoading}
+          />
+          {/* Render the elements component below the dropzone with flex: 1 to expand */}
+          {elementsComponent}
+        </Box>
       ) : (
-        <div>
+        <div style={{ height: "100%", overflow: "hidden" }}>
           <div className="flex flex-col h-full">
             <FileInfo
               metaFile={metaFile}

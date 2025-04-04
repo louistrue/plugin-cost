@@ -18,6 +18,7 @@ const FileDropzone = ({ onFileUploaded, setIsLoading }: FileDropzoneProps) => {
     async (file: File) => {
       if (!file) return;
 
+      console.log(`Processing new file: ${file.name}`);
       setIsLoading(true);
 
       try {
@@ -108,17 +109,17 @@ const FileDropzone = ({ onFileUploaded, setIsLoading }: FileDropzoneProps) => {
         onChange={handleFileInputChange}
       />
 
-      <Box sx={{ textAlign: "center", padding: 3 }}>
+      <Box sx={{ textAlign: "center", padding: 2 }}>
         {isDragActive ? (
           <div>
-            <UploadFileIcon color="primary" sx={{ fontSize: 40, mb: 1 }} />
+            <UploadFileIcon color="primary" sx={{ fontSize: 32, mb: 1 }} />
             <Typography variant="body1" color="primary">
               Lassen Sie die Excel-Datei hier fallen...
             </Typography>
           </div>
         ) : (
           <div>
-            <UploadFileIcon color="primary" sx={{ fontSize: 40, mb: 1 }} />
+            <UploadFileIcon color="primary" sx={{ fontSize: 32, mb: 1 }} />
             <Typography variant="body1" color="textPrimary">
               Drag and Drop
             </Typography>

@@ -150,54 +150,97 @@ const FileInfo = ({ metaFile, onRemoveFile, onSendData }: FileInfoProps) => {
     });
   }, [connectionStatus, sendMessage, registerMessageHandler]);
 
-  // Effect to initialize the EbkpMapper when the component mounts
-  useEffect(() => {
-    const initializeMapper = async () => {
-      console.log("Initializing EbkpMapper with project:", currentProject);
-      try {
-        // Fetch project elements
-        const elements = await getProjectElements(currentProject);
+  // Define initializeMapper first
+  const initializeMapper = useCallback(async () => {
+    console.log("Initializing EbkpMapper with project:", currentProject);
+    try {
+      // Fetch project elements
+      const elements = await getProjectElements(currentProject);
 
-        if (elements.length === 0) {
-          console.warn("No elements found for project:", currentProject);
-          setNotification({
-            open: true,
-            message: `No elements found for project: ${currentProject}`,
-            severity: "warning",
-          });
-          return;
-        }
-
-        // Create new mapper
-        const newMapper = new EbkpMapper(elements);
-        setMapper(newMapper);
-
-        // Get statistics
-        const stats = newMapper.getStatistics();
-        setMappingStats({
-          totalElements: stats.totalElements,
-          uniqueCodes: stats.uniqueCodes,
-          mappedItems: 0, // Will be updated when metaFile changes
-        });
-
-        console.log("EbkpMapper initialized with statistics:", stats);
-      } catch (error) {
-        console.error("Error initializing EbkpMapper:", error);
+      if (elements.length === 0) {
+        console.warn("No elements found for project:", currentProject);
         setNotification({
           open: true,
-          message: `Error loading project elements: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          severity: "error",
+          message: `No elements found for project: ${currentProject}`,
+          severity: "warning",
         });
+        return;
       }
+
+      // Create new mapper
+      const newMapper = new EbkpMapper(elements);
+      setMapper(newMapper);
+
+      // Get statistics
+      const stats = newMapper.getStatistics();
+      setMappingStats({
+        totalElements: stats.totalElements,
+        uniqueCodes: stats.uniqueCodes,
+        mappedItems: 0, // Will be updated when metaFile changes
+      });
+
+      console.log("EbkpMapper initialized with statistics:", stats);
+    } catch (error) {
+      console.error("Error initializing EbkpMapper:", error);
+      setNotification({
+        open: true,
+        message: `Error loading project elements: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        severity: "error",
+      });
+    }
+  }, [currentProject, getProjectElements, setNotification]);
+
+  // Function to completely reset the mapper state, with initializeMapper as dependency
+  const resetMapperState = useCallback(() => {
+    console.log("Completely resetting mapper state");
+    setMapper(null);
+    setMappingStats({
+      totalElements: 0,
+      uniqueCodes: 0,
+      mappedItems: 0,
+    });
+    setMappingResults([]);
+
+    // Force re-initialization on next render if connection is active
+    if (connectionStatus === "CONNECTED") {
+      // Small timeout to ensure clean reset before reinitialization
+      setTimeout(() => {
+        initializeMapper();
+      }, 100);
+    }
+  }, [connectionStatus, initializeMapper]);
+
+  // Reset mapper when metaFile changes to null (file deleted)
+  useEffect(() => {
+    if (!metaFile) {
+      resetMapperState();
+    }
+  }, [metaFile, resetMapperState]);
+
+  // Listen for custom file removal event
+  useEffect(() => {
+    const handleFileRemoved = () => {
+      console.log("Received cost-file-removed event, resetting mapper state");
+      resetMapperState();
     };
 
-    // Only initialize once
+    // Add event listener
+    window.addEventListener("cost-file-removed", handleFileRemoved);
+
+    // Clean up on unmount
+    return () => {
+      window.removeEventListener("cost-file-removed", handleFileRemoved);
+    };
+  }, [resetMapperState]);
+
+  // Only initialize once
+  useEffect(() => {
     if (!mapper && connectionStatus === "CONNECTED") {
       initializeMapper();
     }
-  }, [connectionStatus, currentProject, getProjectElements, mapper]);
+  }, [connectionStatus, mapper, initializeMapper]);
 
   // Effect to map quantities when metaFile or mapper changes
   useEffect(() => {
